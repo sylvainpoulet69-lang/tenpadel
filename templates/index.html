@@ -4,23 +4,65 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="robots" content="noindex" />
-    <title>Calendrier Padel & Inscriptions</title>
+    <title>Calendrier Padel &amp; Inscriptions</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
   </head>
   <body>
     <header class="site-header">
       <h1>Padel – Tournois &amp; Inscriptions</h1>
-      <p class="subtitle">Suivez les tournois TenUp et inscrivez vos équipes.</p>
+      <p class="subtitle">Suivez les tournois TenUp, gérez vos équipes et accédez aux fiches officielles.</p>
     </header>
 
     <main>
       <section class="filters">
         <h2>Filtres</h2>
-        <div class="filter-buttons" role="group" aria-label="Filtrer par catégorie de sexe">
-          <button type="button" data-sex="DM" class="filter-button active" aria-pressed="true">Hommes</button>
-          <button type="button" data-sex="DX" class="filter-button active" aria-pressed="true">Mixte</button>
-          <button type="button" data-sex="DD" class="filter-button active" aria-pressed="true">Dames</button>
+        <div class="filter-buttons" role="group" aria-label="Filtrer par catégorie">
+          <button type="button" data-category="" class="filter-button active" aria-pressed="true">Tous</button>
+          <button type="button" data-category="H" class="filter-button" aria-pressed="false">Hommes</button>
+          <button type="button" data-category="MIXTE" class="filter-button" aria-pressed="false">Mixte</button>
+          <button type="button" data-category="F" class="filter-button" aria-pressed="false">Dames</button>
         </div>
+
+        <form id="filter-form" class="filter-form">
+          <div class="filter-row">
+            <label>
+              Du
+              <input type="date" name="from" required />
+            </label>
+            <label>
+              Au
+              <input type="date" name="to" required />
+            </label>
+          </div>
+          <div class="filter-row">
+            <label>
+              Région
+              <input type="text" name="region" placeholder="Ex. PACA" />
+            </label>
+            <label>
+              Ville
+              <input type="text" name="city" placeholder="Ex. Cagnes-sur-Mer" />
+            </label>
+            <label>
+              Rayon (km)
+              <input type="number" name="radius" min="0" step="1" />
+            </label>
+          </div>
+          <fieldset class="level-fieldset">
+            <legend>Niveau</legend>
+            <div class="level-options">
+              <label><input type="checkbox" name="level" value="P25" /> P25</label>
+              <label><input type="checkbox" name="level" value="P100" /> P100</label>
+              <label><input type="checkbox" name="level" value="P250" /> P250</label>
+              <label><input type="checkbox" name="level" value="P500" /> P500</label>
+              <label><input type="checkbox" name="level" value="P1000" /> P1000</label>
+            </div>
+          </fieldset>
+          <div class="filter-actions">
+            <button type="submit" class="primary">Appliquer</button>
+            <button type="reset" class="secondary">Réinitialiser</button>
+          </div>
+        </form>
       </section>
 
       <section class="calendar" aria-label="Calendrier des tournois">
@@ -49,8 +91,12 @@
       <section class="tournaments">
         <div class="list-header">
           <h2>Tournois</h2>
-          <span id="tournament-count" aria-live="polite">0 tournoi</span>
+          <div class="list-actions">
+            <span id="tournament-count" aria-live="polite">0 tournoi</span>
+            <button type="button" id="admin-refresh" class="secondary" hidden>Rafraîchir (admin)</button>
+          </div>
         </div>
+        <p id="admin-status" class="admin-status muted" hidden></p>
         <div id="tournament-list" class="tournament-list" aria-live="polite"></div>
         <p id="empty-state" class="empty-state" hidden>Aucun tournoi ne correspond aux filtres sélectionnés.</p>
       </section>
@@ -134,17 +180,20 @@
     <template id="tournament-card-template">
       <article class="tournament-card">
         <header>
-          <span class="badge" data-role="sex-badge"></span>
+          <span class="badge" data-role="category-badge"></span>
+          <span class="badge status" data-role="status-badge"></span>
           <h3 data-role="title"></h3>
         </header>
         <p class="club" data-role="club"></p>
         <ul class="details">
-          <li><span class="label">Catégorie</span> <span data-role="category"></span></li>
-          <li><span class="label">Date</span> <span data-role="date"></span></li>
+          <li><span class="label">Dates</span> <span data-role="dates"></span></li>
+          <li><span class="label">Lieu</span> <span data-role="location"></span></li>
+          <li><span class="label">Niveau</span> <span data-role="level"></span></li>
         </ul>
         <div class="actions">
-          <a data-role="tenup-link" target="_blank" rel="noopener" class="secondary">Voir sur TenUp</a>
-          <button type="button" class="primary" data-role="register-button">S'inscrire</button>
+          <a data-role="tenup-link" target="_blank" rel="noopener" class="primary">S'inscrire sur TenUp</a>
+          <a data-role="details-link" target="_blank" rel="noopener" class="secondary">Voir la fiche</a>
+          <button type="button" class="secondary" data-role="register-button">Pré-inscrire</button>
         </div>
       </article>
     </template>
@@ -152,13 +201,19 @@
     <script>
       const LICENCE_REGEX = new RegExp({{ licence_regex|tojson }}, 'i');
       const MAX_TEAMS = {{ max_teams|default('null') }};
-      const SEX_LABELS = { DM: 'Hommes', DD: 'Dames', DX: 'Mixte' };
-      const SEX_CLASSES = { DM: 'sex-male', DD: 'sex-female', DX: 'sex-mixed' };
+      const TENUP_DEFAULTS = {{ tenup_defaults|tojson }};
+      const TENUP_MAX_RESULTS = TENUP_DEFAULTS.max_results || 500;
+      const CATEGORY_LABELS = { H: 'Hommes', F: 'Dames', MIXTE: 'Mixte', '': 'Tous' };
+      const CATEGORY_CLASSES = { H: 'sex-male', F: 'sex-female', MIXTE: 'sex-mixed' };
+      const STATUS_LABELS = { true: 'Inscriptions ouvertes', false: 'Inscriptions fermées' };
+      const STATUS_CLASSES = { true: 'status-open', false: 'status-closed', unknown: 'status-unknown' };
 
       const state = {
         tournaments: [],
-        filters: new Set(['DM', 'DD', 'DX']),
+        filters: createDefaultFilters(),
         calendarDate: new Date(),
+        loading: false,
+        error: null,
       };
 
       const listContainer = document.getElementById('tournament-list');
@@ -171,16 +226,199 @@
       const feedback = document.getElementById('form-feedback');
       const submitButton = document.getElementById('submit-button');
       const closeButton = modal.querySelector('.close-button');
+      const filterForm = document.getElementById('filter-form');
+      const adminRefreshButton = document.getElementById('admin-refresh');
+      const adminStatus = document.getElementById('admin-status');
+
+      init();
+
+      function init() {
+        applyFiltersToForm();
+        setupEventListeners();
+        updateAdminVisibility();
+        loadTournaments();
+      }
+
+      function createDefaultFilters() {
+        const today = new Date();
+        const future = new Date(today.getTime());
+        future.setDate(future.getDate() + 60);
+        return {
+          category: '',
+          from: formatDateInput(today),
+          to: formatDateInput(future),
+          region: TENUP_DEFAULTS.region || '',
+          city: TENUP_DEFAULTS.city || '',
+          radius: TENUP_DEFAULTS.radius_km ?? '',
+          levels: new Set(),
+        };
+      }
+
+      function formatDateInput(date) {
+        const tzOffset = date.getTimezoneOffset() * 60000;
+        return new Date(date.getTime() - tzOffset).toISOString().slice(0, 10);
+      }
+
+      function applyFiltersToForm() {
+        filterForm.elements.from.value = state.filters.from;
+        filterForm.elements.to.value = state.filters.to;
+        filterForm.elements.region.value = state.filters.region;
+        filterForm.elements.city.value = state.filters.city;
+        filterForm.elements.radius.value = state.filters.radius;
+        const levelInputs = filterForm.querySelectorAll('input[name="level"]');
+        levelInputs.forEach(input => {
+          input.checked = state.filters.levels.has(input.value.toUpperCase());
+        });
+      }
+
+      function setupEventListeners() {
+        document.querySelectorAll('.filter-button').forEach(button => {
+          button.addEventListener('click', () => {
+            document.querySelectorAll('.filter-button').forEach(btn => {
+              btn.classList.toggle('active', btn === button);
+              btn.setAttribute('aria-pressed', btn === button ? 'true' : 'false');
+            });
+            state.filters.category = button.dataset.category || '';
+            loadTournaments();
+          });
+        });
+
+        filterForm.addEventListener('submit', event => {
+          event.preventDefault();
+          updateFiltersFromForm();
+          loadTournaments();
+        });
+
+        filterForm.addEventListener('reset', event => {
+          event.preventDefault();
+          state.filters = createDefaultFilters();
+          applyFiltersToForm();
+          loadTournaments();
+        });
+
+        filterForm.querySelectorAll('input[name="level"]').forEach(input => {
+          input.addEventListener('change', () => {
+            const level = input.value.toUpperCase();
+            if (input.checked) {
+              state.filters.levels.add(level);
+            } else {
+              state.filters.levels.delete(level);
+            }
+          });
+        });
+
+        document.querySelectorAll('.calendar-nav').forEach(button => {
+          button.addEventListener('click', () => {
+            const direction = button.dataset.direction === 'next' ? 1 : -1;
+            const nextDate = new Date(state.calendarDate.getTime());
+            nextDate.setMonth(nextDate.getMonth() + direction);
+            state.calendarDate = nextDate;
+            renderCalendar();
+          });
+        });
+
+        closeButton.addEventListener('click', () => closeModal());
+        modal.addEventListener('cancel', event => {
+          event.preventDefault();
+          closeModal();
+        });
+
+        form.addEventListener('submit', handleRegistrationSubmit);
+
+        if (adminRefreshButton) {
+          adminRefreshButton.addEventListener('click', () => triggerAdminRefresh());
+        }
+      }
+
+      function updateFiltersFromForm() {
+        state.filters.from = filterForm.elements.from.value;
+        state.filters.to = filterForm.elements.to.value;
+        state.filters.region = filterForm.elements.region.value.trim();
+        state.filters.city = filterForm.elements.city.value.trim();
+        state.filters.radius = filterForm.elements.radius.value;
+        const selectedLevels = new Set();
+        filterForm.querySelectorAll('input[name="level"]:checked').forEach(input => {
+          selectedLevels.add(input.value.toUpperCase());
+        });
+        state.filters.levels = selectedLevels;
+      }
+
+      function buildQueryParams() {
+        const params = new URLSearchParams();
+        if (state.filters.category) {
+          params.set('category', state.filters.category);
+        }
+        if (state.filters.from) {
+          params.set('from', state.filters.from);
+        }
+        if (state.filters.to) {
+          params.set('to', state.filters.to);
+        }
+        if (state.filters.region) {
+          params.set('region', state.filters.region);
+        }
+        if (state.filters.city) {
+          params.set('city', state.filters.city);
+        }
+        if (state.filters.radius) {
+          params.set('radius_km', state.filters.radius);
+        }
+        Array.from(state.filters.levels).forEach(level => params.append('level', level));
+        params.set('limit', TENUP_MAX_RESULTS);
+        params.set('sort', 'DATE_ASC');
+        return params;
+      }
 
       async function loadTournaments() {
-        const response = await fetch('/api/tournaments');
-        const payload = await response.json();
-        state.tournaments = (payload.tournaments || []).map(t => ({
-          ...t,
-          date: t.date || null,
-          date_text: t.date_text || 'Date inconnue',
-        }));
-        render();
+        state.loading = true;
+        state.error = null;
+        renderList();
+        const params = buildQueryParams();
+        try {
+          const response = await fetch(`/api/tournaments?${params.toString()}`);
+          if (!response.ok) {
+            throw new Error(`API error ${response.status}`);
+          }
+          const payload = await response.json();
+          state.tournaments = (payload.items || []).map(normaliseTournament);
+        } catch (error) {
+          console.error(error);
+          state.tournaments = [];
+          state.error = "Impossible de charger les tournois TenUp.";
+        } finally {
+          state.loading = false;
+          render();
+        }
+      }
+
+      function normaliseTournament(raw) {
+        const start = raw.start_date || raw.startDate || '';
+        const end = raw.end_date || raw.endDate || start;
+        const category = (raw.category || 'MIXTE').toUpperCase();
+        const level = raw.level ? String(raw.level).toUpperCase() : null;
+        const city = raw.city || '';
+        const postalCode = raw.postal_code || '';
+        const region = raw.region || '';
+        const locationParts = [city, postalCode, region].filter(Boolean);
+        const location = locationParts.join(' • ');
+        return {
+          ...raw,
+          category,
+          level,
+          start_date: start,
+          end_date: end,
+          location,
+          club_name: raw.club_name || '',
+          sex: mapCategoryToSex(category),
+          registration_url: raw.registration_url || raw.details_url,
+          details_url: raw.details_url || raw.registration_url,
+        };
+      }
+
+      function mapCategoryToSex(category) {
+        if (category === 'H') return 'DM';
+        if (category === 'F') return 'DD';
+        return 'DX';
       }
 
       function render() {
@@ -193,7 +431,7 @@
         const year = current.getFullYear();
         const month = current.getMonth();
         const firstDay = new Date(year, month, 1);
-        const startDay = (firstDay.getDay() + 6) % 7; // convert Sunday=0 to Monday=0
+        const startDay = (firstDay.getDay() + 6) % 7;
         const daysInMonth = new Date(year, month + 1, 0).getDate();
         calendarTitle.textContent = current.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
         calendarBody.innerHTML = '';
@@ -208,7 +446,7 @@
             } else {
               cell.textContent = day;
               const isoDate = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-              if (state.tournaments.some(t => t.date === isoDate)) {
+              if (state.tournaments.some(t => t.start_date === isoDate)) {
                 const marker = document.createElement('span');
                 marker.className = 'calendar-marker';
                 marker.title = 'Tournoi disponible';
@@ -228,46 +466,112 @@
 
       function renderList() {
         listContainer.innerHTML = '';
-        const active = state.tournaments.filter(t => state.filters.has((t.sex || 'DX')));
-        countLabel.textContent = `${active.length} ${active.length > 1 ? 'tournois' : 'tournoi'}`;
-        if (active.length === 0) {
-          emptyState.hidden = false;
+        if (state.loading) {
+          countLabel.textContent = 'Chargement…';
+          emptyState.hidden = true;
+          listContainer.setAttribute('aria-busy', 'true');
           return;
         }
+        listContainer.removeAttribute('aria-busy');
+
+        if (state.error) {
+          countLabel.textContent = 'Erreur';
+          emptyState.hidden = false;
+          emptyState.textContent = state.error;
+          return;
+        }
+
+        if (state.tournaments.length === 0) {
+          countLabel.textContent = '0 tournoi';
+          emptyState.hidden = false;
+          emptyState.textContent = 'Aucun tournoi ne correspond aux filtres sélectionnés.';
+          return;
+        }
+
         emptyState.hidden = true;
+        const sorted = [...state.tournaments].sort((a, b) => {
+          if (a.start_date && b.start_date) {
+            return a.start_date.localeCompare(b.start_date);
+          }
+          return a.title.localeCompare(b.title);
+        });
+
+        countLabel.textContent = `${sorted.length} ${sorted.length > 1 ? 'tournois' : 'tournoi'}`;
         const template = document.getElementById('tournament-card-template');
-        active
-          .sort((a, b) => {
-            if (a.date && b.date) {
-              return a.date.localeCompare(b.date);
-            }
-            if (a.date) return -1;
-            if (b.date) return 1;
-            return a.title.localeCompare(b.title);
-          })
-          .forEach(tournament => {
-            const fragment = template.content.cloneNode(true);
-            const badge = fragment.querySelector('[data-role="sex-badge"]');
-            const title = fragment.querySelector('[data-role="title"]');
-            const club = fragment.querySelector('[data-role="club"]');
-            const category = fragment.querySelector('[data-role="category"]');
-            const date = fragment.querySelector('[data-role="date"]');
-            const tenupLink = fragment.querySelector('[data-role="tenup-link"]');
-            const registerButton = fragment.querySelector('[data-role="register-button"]');
 
-            const sex = tournament.sex || 'DX';
-            badge.textContent = SEX_LABELS[sex] || 'Mixte';
-            badge.classList.add('badge', SEX_CLASSES[sex] || SEX_CLASSES.DX);
-            title.textContent = tournament.title;
-            club.textContent = tournament.club || 'Club à confirmer';
-            category.textContent = tournament.category || 'N/C';
-            date.textContent = tournament.date ? new Date(tournament.date).toLocaleDateString('fr-FR') : tournament.date_text;
-            tenupLink.href = tournament.url;
+        sorted.forEach(tournament => {
+          const fragment = template.content.cloneNode(true);
+          const categoryBadge = fragment.querySelector('[data-role="category-badge"]');
+          const statusBadge = fragment.querySelector('[data-role="status-badge"]');
+          const title = fragment.querySelector('[data-role="title"]');
+          const club = fragment.querySelector('[data-role="club"]');
+          const dates = fragment.querySelector('[data-role="dates"]');
+          const location = fragment.querySelector('[data-role="location"]');
+          const level = fragment.querySelector('[data-role="level"]');
+          const tenupLink = fragment.querySelector('[data-role="tenup-link"]');
+          const detailsLink = fragment.querySelector('[data-role="details-link"]');
+          const registerButton = fragment.querySelector('[data-role="register-button"]');
 
-            registerButton.addEventListener('click', () => openModal(tournament));
+          const categoryClass = CATEGORY_CLASSES[tournament.category] || CATEGORY_CLASSES.MIXTE;
+          categoryBadge.textContent = CATEGORY_LABELS[tournament.category] || 'Mixte';
+          categoryBadge.classList.add(categoryClass);
 
-            listContainer.appendChild(fragment);
-          });
+          if (tournament.inscriptions_open === null || typeof tournament.inscriptions_open === 'undefined') {
+            statusBadge.textContent = 'Inscriptions à confirmer';
+            statusBadge.classList.add('status-unknown');
+          } else {
+            const key = tournament.inscriptions_open ? 'true' : 'false';
+            statusBadge.textContent = STATUS_LABELS[key];
+            statusBadge.classList.add(STATUS_CLASSES[key]);
+          }
+
+          title.textContent = tournament.title;
+          club.textContent = tournament.club_name || tournament.location || 'Club à confirmer';
+          dates.textContent = formatDateRange(tournament.start_date, tournament.end_date);
+          location.textContent = tournament.location || 'Lieu à confirmer';
+          level.textContent = tournament.level || 'Tous niveaux';
+
+          if (tournament.registration_url) {
+            tenupLink.href = tournament.registration_url;
+            tenupLink.classList.remove('disabled');
+          } else {
+            tenupLink.href = '#';
+            tenupLink.classList.add('disabled');
+          }
+          const detailUrl = tournament.details_url || tournament.registration_url;
+          if (detailUrl) {
+            detailsLink.href = detailUrl;
+            detailsLink.classList.remove('disabled');
+          } else {
+            detailsLink.href = '#';
+            detailsLink.classList.add('disabled');
+          }
+
+          registerButton.addEventListener('click', () => openModal(tournament));
+
+          listContainer.appendChild(fragment);
+        });
+      }
+
+      function formatDateRange(start, end) {
+        if (!start) {
+          return 'Dates à confirmer';
+        }
+        const startDate = new Date(start);
+        if (Number.isNaN(startDate.getTime())) {
+          return 'Dates à confirmer';
+        }
+        const endDate = end ? new Date(end) : startDate;
+        const formatterStart = new Intl.DateTimeFormat('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' });
+        const formatterEndSame = new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'short' });
+        const formatterEndFull = new Intl.DateTimeFormat('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' });
+        const startLabel = formatterStart.format(startDate);
+        if (!end || Number.isNaN(endDate.getTime()) || startDate.getTime() === endDate.getTime()) {
+          return startLabel;
+        }
+        const sameMonthYear = startDate.getMonth() === endDate.getMonth() && startDate.getFullYear() === endDate.getFullYear();
+        const endLabel = (sameMonthYear ? formatterEndSame : formatterEndFull).format(endDate);
+        return `${startLabel} → ${endLabel}`;
       }
 
       function openModal(tournament) {
@@ -277,18 +581,17 @@
         submitButton.textContent = "Envoyer l'inscription";
 
         document.getElementById('modal-tournament-title').textContent = tournament.title;
-        document.getElementById('modal-tournament-date').textContent = tournament.date
-          ? new Date(tournament.date).toLocaleDateString('fr-FR')
-          : tournament.date_text;
-        document.getElementById('modal-tournament-club').textContent = tournament.club || '';
+        document.getElementById('modal-tournament-date').textContent = formatDateRange(tournament.start_date, tournament.end_date);
+        const clubSummary = [tournament.club_name, tournament.location].filter(Boolean).join(' • ');
+        document.getElementById('modal-tournament-club').textContent = clubSummary;
 
-        document.getElementById('input-tournament-id').value = tournament.tournament_id;
+        document.getElementById('input-tournament-id').value = tournament.external_id || tournament.id || '';
         document.getElementById('input-tournament-title').value = tournament.title;
-        document.getElementById('input-tournament-date').value = tournament.date || tournament.date_text || '';
-        document.getElementById('input-tournament-url').value = tournament.url;
-        document.getElementById('input-club').value = tournament.club || '';
+        document.getElementById('input-tournament-date').value = tournament.start_date;
+        document.getElementById('input-tournament-url').value = tournament.details_url || tournament.registration_url || '';
+        document.getElementById('input-club').value = tournament.club_name || tournament.location || '';
         document.getElementById('input-sex').value = tournament.sex || '';
-        document.getElementById('input-category').value = tournament.category || '';
+        document.getElementById('input-category').value = tournament.level || '';
 
         if (typeof MAX_TEAMS === 'number') {
           feedback.hidden = false;
@@ -316,7 +619,7 @@
         feedback.classList.toggle('error', isError);
       }
 
-      form.addEventListener('submit', async event => {
+      async function handleRegistrationSubmit(event) {
         event.preventDefault();
         feedback.classList.remove('error');
 
@@ -353,7 +656,7 @@
           if (!response.ok || !result.ok) {
             setFeedback(result.message || "Une erreur est survenue.", true);
             submitButton.disabled = false;
-            submitButton.textContent = "Réessayer";
+            submitButton.textContent = 'Réessayer';
             return;
           }
           setFeedback(result.message || 'Inscription enregistrée.');
@@ -366,46 +669,60 @@
           console.error(error);
           setFeedback("Impossible d'envoyer le formulaire.", true);
           submitButton.disabled = false;
-          submitButton.textContent = "Réessayer";
+          submitButton.textContent = 'Réessayer';
         }
-      });
+      }
 
-      closeButton.addEventListener('click', () => closeModal());
-      modal.addEventListener('cancel', event => {
-        event.preventDefault();
-        closeModal();
-      });
+      function updateAdminVisibility() {
+        const params = new URLSearchParams(window.location.search);
+        const isAdmin = params.get('admin') === '1';
+        if (isAdmin) {
+          adminRefreshButton.hidden = false;
+        }
+      }
 
-      document.querySelectorAll('.filter-button').forEach(button => {
-        button.addEventListener('click', () => {
-          const sex = button.dataset.sex;
-          const isActive = button.classList.toggle('active');
-          button.setAttribute('aria-pressed', String(isActive));
-          if (isActive) {
-            state.filters.add(sex);
-          } else {
-            state.filters.delete(sex);
+      async function triggerAdminRefresh() {
+        const token = window.prompt('Token administrateur TenUp');
+        if (!token) {
+          return;
+        }
+        adminRefreshButton.disabled = true;
+        adminRefreshButton.textContent = 'Rafraîchissement…';
+        adminStatus.hidden = false;
+        adminStatus.textContent = 'Scraping en cours…';
+        try {
+          const payload = {
+            categories: state.filters.category ? [state.filters.category] : ['H', 'F', 'MIXTE'],
+            date_from: state.filters.from,
+            date_to: state.filters.to,
+            region: state.filters.region,
+            city: state.filters.city,
+            radius_km: state.filters.radius ? Number(state.filters.radius) : undefined,
+            level: Array.from(state.filters.levels),
+            limit: TENUP_MAX_RESULTS,
+          };
+          const response = await fetch('/admin/scrape', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-ADMIN-TOKEN': token,
+            },
+            body: JSON.stringify(payload),
+          });
+          const result = await response.json();
+          if (!response.ok || !result.ok) {
+            throw new Error(result.message || 'Échec du scraping');
           }
-          if (state.filters.size === 0) {
-            // Always keep at least one filter active
-            state.filters.add(sex);
-            button.classList.add('active');
-            button.setAttribute('aria-pressed', 'true');
-            return;
-          }
-          renderList();
-        });
-      });
-
-      document.querySelectorAll('.calendar-nav').forEach(button => {
-        button.addEventListener('click', () => {
-          const direction = button.dataset.direction === 'next' ? 1 : -1;
-          state.calendarDate.setMonth(state.calendarDate.getMonth() + direction);
-          renderCalendar();
-        });
-      });
-
-      loadTournaments();
+          adminStatus.textContent = `Scraping terminé : ${result.inserted} nouveaux tournois, ${result.updated} mis à jour.`;
+          loadTournaments();
+        } catch (error) {
+          console.error(error);
+          adminStatus.textContent = error.message || 'Impossible de lancer le scraping.';
+        } finally {
+          adminRefreshButton.disabled = false;
+          adminRefreshButton.textContent = 'Rafraîchir (admin)';
+        }
+      }
     </script>
   </body>
 </html>
