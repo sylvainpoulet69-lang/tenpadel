@@ -10,7 +10,6 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from io import StringIO
-from pathlib import Path
 from typing import Dict, List, Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -24,23 +23,19 @@ from services.scrape import scrape_tenup
 from services.tournament_store import TournamentStore
 from services.tournament_store_models import TournamentRecord
 
+# >>> DB PATH PATCH >>>
+from pathlib import Path
+
 BASE_DIR = Path(__file__).parent.resolve()
 DATABASE_PATH = BASE_DIR / "data" / "app.db"
-
-try:
-    DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if not DATABASE_PATH.exists():
-        DATABASE_PATH.touch()
-except OSError:
-    DATABASE_PATH = Path("/tmp/tenpadel_app.db")
-    try:
-        DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        if not DATABASE_PATH.exists():
-            DATABASE_PATH.touch()
-    except OSError:
-        pass
-
 SQLALCHEMY_DATABASE_URI = f"sqlite:///{DATABASE_PATH}"
+try:
+    app
+    app.config["SQLALCHEMY_DATABASE_URI"] = SQLALCHEMY_DATABASE_URI
+except NameError:
+    pass
+print(f"📁 Database path used: {DATABASE_PATH}")
+# <<< DB PATH PATCH <<<
 
 CONFIG_PATH = BASE_DIR / "config.json"
 TOURNAMENTS_PATH = BASE_DIR / "data" / "tournaments.json"
@@ -88,13 +83,6 @@ class ClubToken:
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
-
-try:
-    app.config["SQLALCHEMY_DATABASE_URI"] = SQLALCHEMY_DATABASE_URI
-except NameError:
-    pass
-
-print(f"📁 Database path used: {DATABASE_PATH}")
 
 
 def load_config() -> Dict[str, object]:
