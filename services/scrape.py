@@ -1,47 +1,36 @@
-"""High level orchestration for scraping TenUp tournaments."""
+"""High-level orchestration to scrape TenUp tournaments with Playwright."""
 from __future__ import annotations
 
 import argparse
 import json
 import logging
-from dataclasses import dataclass
+from datetime import date, datetime, timezone
 from pathlib import Path
-from time import perf_counter
 from typing import Iterable, List, Optional, Sequence
 
-import pendulum
 from flask import Flask
+from playwright.sync_api import sync_playwright
 
 from extensions import db
-from scrapers.tenup import ScrapedTournament, TenUpScraper
+from scrapers.tenup import (
+    TENUP_URL,
+    accept_cookies,
+    extract_cards,
+    search_and_sort,
+    select_discipline_padel,
+    select_ligue_paca_alpes_maritimes,
+    warn_client_side_date_filter,
+)
 from services.tournament_store import TournamentStore
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
+LOG_PATH = DATA_DIR / "logs" / "tenup.log"
 DATABASE_PATH = DATA_DIR / "app.db"
 JSON_PATH = DATA_DIR / "tournaments.json"
-CONFIG_PATH = BASE_DIR / "config.json"
-LOG_PATH = DATA_DIR / "logs" / "tenup.log"
 
-
-DEFAULT_LEVELS = ["P100", "P250", "P500", "P1000", "P1500", "P2000"]
-DEFAULT_CATEGORIES = ["H", "F", "MIXTE"]
-
-
-@dataclass(slots=True)
-class ScrapeParameters:
-    region: str
-    date_from: str
-    date_to: str
-    categories: List[str]
-    levels: List[str]
-    limit: int
-
-
-def _load_config(path: Path = CONFIG_PATH) -> dict:
-    if not path.exists():
-        return {}
-    return json.loads(path.read_text(encoding="utf-8"))
+DEFAULT_REGION = "PROVENCE ALPES COTE D’AZUR"
+DEFAULT_COMMITTEE = "ALPES MARITIMES"
 
 
 def _ensure_storage() -> None:
@@ -50,242 +39,217 @@ def _ensure_storage() -> None:
     DATABASE_PATH.touch(exist_ok=True)
 
 
+def _configure_logging() -> logging.Logger:
+    logger = logging.getLogger()
+    if logger.handlers:
+        return logging.getLogger("services.scrape")
+
+    logger.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    logger.addHandler(stream_handler)
+
+    file_handler = logging.FileHandler(LOG_PATH, encoding="utf-8")
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+
+    return logging.getLogger("services.scrape")
+
+
 def _create_app(sqlite_path: Path) -> Flask:
-    app = Flask("tenpadel-scraper")
+    app = Flask("tenup-scraper")
     app.config.update(
         SQLALCHEMY_DATABASE_URI=f"sqlite:///{sqlite_path}",
         SQLALCHEMY_TRACK_MODIFICATIONS=False,
-        TENUP_CONFIG=_load_config().get("tenup", {}),
     )
     db.init_app(app)
     return app
 
 
-def _compute_date_range(
-    date_from: Optional[str], date_to: Optional[str], default_window_days: int = 60
-) -> tuple[str, str]:
-    tz = "Europe/Paris"
-    start = pendulum.parse(date_from, strict=False) if date_from else pendulum.now(tz)
-    end = pendulum.parse(date_to, strict=False) if date_to else start.add(days=default_window_days)
-    if end < start:
-        start, end = end, start
-    return start.to_date_string(), end.to_date_string()
+def _parse_date(value: Optional[str]) -> Optional[date]:
+    if not value:
+        return None
+    return datetime.strptime(value, "%Y-%m-%d").date()
 
 
-def _parse_cli_arguments(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Scrape TenUp tournaments (Playwright only)")
-    parser.add_argument("--region", help="Région administrative à filtrer")
-    parser.add_argument("--from", dest="date_from", help="Date de début (YYYY-MM-DD)")
-    parser.add_argument("--to", dest="date_to", help="Date de fin (YYYY-MM-DD)")
-    parser.add_argument(
-        "--category",
-        action="append",
-        help="Catégorie à inclure (H, F, MIXTE). Peut être utilisée plusieurs fois.",
-    )
-    parser.add_argument(
-        "--level",
-        action="append",
-        help="Niveau à inclure (P100, P250, ...). Peut être utilisée plusieurs fois.",
-    )
-    parser.add_argument(
-        "--limit",
-        type=int,
-        default=200,
-        help="Nombre maximum de tournois à collecter.",
-    )
-    return parser.parse_args(argv)
-
-
-def _resolve_parameters(config: dict, args: argparse.Namespace) -> ScrapeParameters:
-    tenup_cfg = config.get("tenup", {})
-    region = args.region or tenup_cfg.get("default_region", "")
-
-    tz = "Europe/Paris"
-    now = pendulum.now(tz)
-    start = pendulum.parse(args.date_from, strict=False) if args.date_from else now
-    end = pendulum.parse(args.date_to, strict=False) if args.date_to else now.add(days=60)
-    if end < start:
-        start, end = end, start
-
-    categories = [token.strip().upper() for token in (args.category or []) if token]
-    if not categories:
-        categories = [
-            str(token).upper()
-            for token in tenup_cfg.get("default_categories", DEFAULT_CATEGORIES)
-        ]
-
-    levels = [token.strip().upper() for token in (args.level or []) if token]
-    if not levels:
-        levels = [
-            str(token).upper() for token in tenup_cfg.get("default_levels", DEFAULT_LEVELS)
-        ]
-
-    limit = max(1, min(int(args.limit or tenup_cfg.get("max_results", 200)), 1000))
-
-    return ScrapeParameters(
-        region=region,
-        date_from=start.to_date_string(),
-        date_to=end.to_date_string(),
-        categories=categories,
-        levels=levels,
-        limit=limit,
-    )
-
-
-def _configure_logging() -> None:
-    root_logger = logging.getLogger()
-    if any(
-        isinstance(handler, logging.FileHandler)
-        and getattr(handler, "baseFilename", "") == str(LOG_PATH)
-        for handler in root_logger.handlers
-    ):
-        return
-
-    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    file_handler = logging.FileHandler(LOG_PATH, encoding="utf-8")
-    stream_handler = logging.StreamHandler()
-    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-    file_handler.setFormatter(formatter)
-    stream_handler.setFormatter(formatter)
-
-    root_logger.setLevel(logging.INFO)
-    root_logger.addHandler(stream_handler)
-    root_logger.addHandler(file_handler)
-
-
-def scrape_tenup(
-    config: dict,
+def _filter_and_normalise(
+    items: Iterable[dict],
     *,
-    categories: Optional[Iterable[str]] = None,
-    date_from: Optional[str] = None,
-    date_to: Optional[str] = None,
-    region: Optional[str] = None,
-    city: Optional[str] = None,
-    radius_km: Optional[int] = None,
-    level: Optional[Iterable[str]] = None,
-    limit: Optional[int] = None,
-) -> tuple[List[dict], dict]:
-    """Scrape TenUp tournaments without persisting the results."""
-
-    _ensure_storage()
-    _configure_logging()
-
-    tenup_cfg = (config or {}).get("tenup", {})
-
-    resolved_categories = [token.strip().upper() for token in (categories or []) if token]
-    if not resolved_categories:
-        resolved_categories = [
-            str(token).upper()
-            for token in tenup_cfg.get("default_categories", DEFAULT_CATEGORIES)
-        ]
-
-    resolved_levels = [token.strip().upper() for token in (level or []) if token]
-    if not resolved_levels:
-        resolved_levels = [
-            str(token).upper() for token in tenup_cfg.get("default_levels", DEFAULT_LEVELS)
-        ]
-
-    start_date, end_date = _compute_date_range(date_from, date_to)
-
-    limit_value = int(limit or tenup_cfg.get("max_results", 200))
-    limit_value = max(1, min(limit_value, 1000))
-
-    region_value = region or tenup_cfg.get("default_region")
-
-    scraper = TenUpScraper(
-        base_url=tenup_cfg.get("base_url", "https://tenup.fft.fr/recherche/tournois"),
-        headless=bool(tenup_cfg.get("headless", True)),
-        request_timeout_ms=int(tenup_cfg.get("request_timeout_ms", 30000)),
-        respect_rate_limit=bool(tenup_cfg.get("respect_rate_limit", True)),
-        log_path=LOG_PATH,
-        random_delay_range=(1.2, 2.0),
-        max_retries=3,
-    )
-
-    started = perf_counter()
-    tournaments: List[ScrapedTournament] = scraper.scrape(
-        region=region_value,
-        date_from=start_date,
-        date_to=end_date,
-        categories=resolved_categories,
-        levels=resolved_levels,
-        limit=limit_value,
-    )
-    duration = perf_counter() - started
-
-    payload = [item.asdict() for item in tournaments]
-    meta = {
-        "duration_s": round(duration, 3),
-        "categories": resolved_categories,
-        "date_from": start_date,
-        "date_to": end_date,
-        "level": resolved_levels,
-        "geo": {"region": region_value, "city": city, "radius_km": radius_km},
-        "fetched": len(payload),
-    }
-    return payload, meta
-
-
-def scrape_all(
     region: str,
-    date_from: str,
-    date_to: str,
-    categories: Iterable[str],
-    levels: Iterable[str],
-    limit: int = 200,
+    date_from: Optional[str],
+    date_to: Optional[str],
+    limit: int,
+    logger: logging.Logger,
 ) -> List[dict]:
-    """Scrape TenUp tournaments and persist results to JSON and SQLite."""
+    start_bound = _parse_date(date_from)
+    end_bound = _parse_date(date_to)
 
-    _ensure_storage()
-    _configure_logging()
+    unique: dict[str, dict] = {}
+    for raw in items:
+        tid = raw.get("tournament_id")
+        start_value = raw.get("start_date")
+        end_value = raw.get("end_date") or start_value
+        if not tid or not start_value:
+            continue
 
-    config = _load_config()
-    payload, _meta = scrape_tenup(
-        config,
-        categories=list(categories),
-        date_from=date_from,
-        date_to=date_to,
-        region=region,
-        level=list(levels),
-        limit=limit,
-    )
+        start_date = _parse_date(start_value)
+        end_date = _parse_date(end_value) if end_value else None
+        if start_bound and (not start_date or start_date < start_bound):
+            continue
+        if end_bound:
+            if not end_date:
+                continue
+            if end_date > end_bound:
+                continue
 
+        start_iso = start_date.isoformat()
+        end_iso = end_date.isoformat() if end_date else start_iso
+
+        normalised = {
+            "tournament_id": tid,
+            "name": raw.get("name", ""),
+            "level": raw.get("level"),
+            "category": raw.get("category") or "PADEL",
+            "club_name": raw.get("club_name"),
+            "club_code": None,
+            "organizer": None,
+            "city": raw.get("city"),
+            "region": region,
+            "address": None,
+            "start_date": start_iso,
+            "end_date": end_iso,
+            "registration_deadline": None,
+            "surface": None,
+            "indoor_outdoor": None,
+            "draw_size": None,
+            "price": None,
+            "status": None,
+            "detail_url": raw.get("detail_url") or TENUP_URL,
+            "registration_url": raw.get("registration_url"),
+        }
+        unique[tid] = normalised
+
+    filtered = list(unique.values())
+    filtered.sort(key=lambda item: (item["start_date"], item["tournament_id"]))
+    if limit:
+        filtered = filtered[:limit]
+
+    logger.info("Fetched %d tournaments.", len(filtered))
+    return filtered
+
+
+def _stamp_records(records: Iterable[dict]) -> List[dict]:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    stamped: List[dict] = []
+    for record in records:
+        payload = dict(record)
+        payload.setdefault("last_scraped_at", now_iso)
+        payload.setdefault("registration_url", None)
+        stamped.append(payload)
+    return stamped
+
+
+def _persist(records: Sequence[dict]) -> None:
     app = _create_app(DATABASE_PATH)
     with app.app_context():
         db.create_all()
         store = TournamentStore(db, JSON_PATH)
-        store.upsert_many(payload)
+        store.upsert_many(records)
 
-    return payload
+
+def scrape_all(
+    region: str,
+    committee: str,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    limit: int = 500,
+) -> List[dict]:
+    """Scrape TenUp tournaments, filter client-side and persist results."""
+
+    _ensure_storage()
+    logger = _configure_logging()
+
+    logger.info(
+        "Starting TenUp scrape",
+        extra={"region": region, "committee": committee, "limit": limit},
+    )
+    warn_client_side_date_filter(logger)
+
+    raw_items: List[dict] = []
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        context = browser.new_context(
+            locale="fr-FR",
+            timezone_id="Europe/Paris",
+            viewport={"width": 1440, "height": 900},
+        )
+        page = context.new_page()
+        try:
+            page.goto(TENUP_URL, wait_until="domcontentloaded")
+            page.wait_for_load_state("networkidle")
+            accept_cookies(page)
+            select_ligue_paca_alpes_maritimes(
+                page, region=region, committee=committee, logger=logger
+            )
+            select_discipline_padel(page, logger=logger)
+            search_and_sort(page, logger=logger)
+            raw_items = extract_cards(page, limit=limit)
+        finally:
+            context.close()
+            browser.close()
+
+    processed = _filter_and_normalise(
+        raw_items,
+        region=region,
+        date_from=date_from,
+        date_to=date_to,
+        limit=limit,
+        logger=logger,
+    )
+    stamped = _stamp_records(processed)
+
+    JSON_PATH.write_text(
+        json.dumps(stamped, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    _persist(stamped)
+    return stamped
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Scrape TenUp tournaments (UI only)")
+    parser.add_argument(
+        "--region",
+        default=DEFAULT_REGION,
+        help="Nom de la ligue (par défaut: PROVENCE ALPES COTE D’AZUR)",
+    )
+    parser.add_argument(
+        "--committee",
+        default=DEFAULT_COMMITTEE,
+        help="Nom du comité (par défaut: ALPES MARITIMES)",
+    )
+    parser.add_argument("--date-from", dest="date_from", help="Date de début YYYY-MM-DD")
+    parser.add_argument("--date-to", dest="date_to", help="Date de fin YYYY-MM-DD")
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=500,
+        help="Nombre maximum de tournois à retourner",
+    )
+    return parser
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    args = _parse_cli_arguments(argv)
-    config = _load_config()
-    params = _resolve_parameters(config, args)
-
-    _ensure_storage()
-    _configure_logging()
-
-    logging.getLogger("services.scrape").info(
-        "Scraping TenUp",
-        extra={
-            "region": params.region,
-            "date_from": params.date_from,
-            "date_to": params.date_to,
-            "categories": params.categories,
-            "levels": params.levels,
-            "limit": params.limit,
-        },
-    )
+    parser = _build_arg_parser()
+    args = parser.parse_args(argv)
 
     results = scrape_all(
-        region=params.region,
-        date_from=params.date_from,
-        date_to=params.date_to,
-        categories=params.categories,
-        levels=params.levels,
-        limit=params.limit,
+        region=args.region,
+        committee=args.committee,
+        date_from=args.date_from,
+        date_to=args.date_to,
+        limit=int(args.limit or 500),
     )
 
     print(f"🎯 TenUp scraping terminé – {len(results)} tournois")
@@ -294,6 +258,5 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     return 0
 
 
-if __name__ == "__main__":  # pragma: no cover - CLI usage
+if __name__ == "__main__":  # pragma: no cover - CLI entrypoint
     raise SystemExit(main())
-
