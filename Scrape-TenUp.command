@@ -1,9 +1,28 @@
 #!/bin/bash
+set -e
 cd "$(dirname "$0")" || exit 1
-source .venv/bin/activate
 
-TOKEN=$(jq -r '.admin_token' config.json 2>/dev/null || echo "test")
+# Token admin
+if command -v jq >/dev/null 2>&1; then
+  TOKEN=$(jq -r '.admin_token' config.json)
+else
+  TOKEN=$(python3 - <<'PY'
+import json,sys
+try:
+    print(json.load(open("config.json"))["admin_token"])
+except Exception:
+    print("test")
+PY
+)
+fi
 
+# App doit tourner
+curl -sf "http://127.0.0.1:5000/" >/dev/null || {
+  echo "❌ L'app ne tourne pas. Lance Start-TenPadel.command d'abord."
+  exit 1
+}
+
+# Scrape
 curl -X POST "http://127.0.0.1:5000/admin/scrape" \
   -H "Content-Type: application/json" \
   -H "X-ADMIN-TOKEN: $TOKEN" \
@@ -15,5 +34,5 @@ curl -X POST "http://127.0.0.1:5000/admin/scrape" \
         "level":     ["P250","P500"],
         "limit":     100
       }'
-
+echo
 echo "✅ Scraping terminé."
