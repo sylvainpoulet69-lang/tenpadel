@@ -24,10 +24,27 @@ from services.scrape import scrape_tenup
 from services.tournament_store import TournamentStore
 from services.tournament_store_models import TournamentRecord
 
-CONFIG_PATH = Path("config.json")
-TOURNAMENTS_PATH = Path("data/tournaments.json")
-REGISTRATIONS_PATH = Path("data/registrations.csv")
-DATABASE_PATH = Path("data/app.db")
+BASE_DIR = Path(__file__).parent.resolve()
+DATABASE_PATH = BASE_DIR / "data" / "app.db"
+
+try:
+    DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if not DATABASE_PATH.exists():
+        DATABASE_PATH.touch()
+except OSError:
+    DATABASE_PATH = Path("/tmp/tenpadel_app.db")
+    try:
+        DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if not DATABASE_PATH.exists():
+            DATABASE_PATH.touch()
+    except OSError:
+        pass
+
+SQLALCHEMY_DATABASE_URI = f"sqlite:///{DATABASE_PATH}"
+
+CONFIG_PATH = BASE_DIR / "config.json"
+TOURNAMENTS_PATH = BASE_DIR / "data" / "tournaments.json"
+REGISTRATIONS_PATH = BASE_DIR / "data" / "registrations.csv"
 TENUP_SCRAPE_JOB_ID = "tenup_scrape"
 CSV_HEADERS = [
     "timestamp",
@@ -71,6 +88,13 @@ class ClubToken:
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+
+try:
+    app.config["SQLALCHEMY_DATABASE_URI"] = SQLALCHEMY_DATABASE_URI
+except NameError:
+    pass
+
+print(f"📁 Database path used: {DATABASE_PATH}")
 
 
 def load_config() -> Dict[str, object]:
@@ -125,7 +149,7 @@ TENUP_CONFIG = CONFIG.get("tenup", {})
 ADMIN_TOKEN = CONFIG.get("admin_token")
 
 app.config.update(
-    SQLALCHEMY_DATABASE_URI=f"sqlite:///{DATABASE_PATH}",
+    SQLALCHEMY_DATABASE_URI=SQLALCHEMY_DATABASE_URI,
     SQLALCHEMY_TRACK_MODIFICATIONS=False,
     JSON_SORT_KEYS=False,
     TENUP_CONFIG=TENUP_CONFIG,
