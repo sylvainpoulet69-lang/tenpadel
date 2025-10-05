@@ -1,38 +1,42 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 cd "$(dirname "$0")" || exit 1
 
-# Token admin
-if command -v jq >/dev/null 2>&1; then
-  TOKEN=$(jq -r '.admin_token' config.json)
-else
-  TOKEN=$(python3 - <<'PY'
-import json,sys
-try:
-    print(json.load(open("config.json"))["admin_token"])
-except Exception:
-    print("test")
+echo "🎾 Scraping TenUp (sans API)…"
+
+PY="/usr/local/bin/python3"
+[ -x "$PY" ] || PY="python3"
+if [ ! -d ".venv" ]; then
+  "$PY" -m venv .venv
+fi
+source .venv/bin/activate
+
+pip install --upgrade pip setuptools wheel >/dev/null
+pip install -r requirements.txt >/dev/null
+python -m playwright install chromium >/dev/null 2>&1 || true
+
+mkdir -p data data/logs
+touch data/app.db
+touch data/tournaments.json
+chmod -R u+rwX,go+rwX data
+
+export PYTHONPATH="$PWD"
+
+if python - <<'PY'
+import importlib.util, sys
+spec = importlib.util.find_spec("services.scrape")
+sys.exit(0 if spec else 1)
 PY
-)
+then
+  echo "➡️  python -m services.scrape"
+  python -m services.scrape
+else
+  echo "➡️  python -m scrapers.tenup"
+  python -m scrapers.tenup
 fi
 
-# App doit tourner
-curl -sf "http://127.0.0.1:5000/" >/dev/null || {
-  echo "❌ L'app ne tourne pas. Lance Start-TenPadel.command d'abord."
-  exit 1
-}
-
-# Scrape
-curl -X POST "http://127.0.0.1:5000/admin/scrape" \
-  -H "Content-Type: application/json" \
-  -H "X-ADMIN-TOKEN: $TOKEN" \
-  -d '{
-        "categories": ["H","F","MIXTE"],
-        "date_from": "2025-10-01",
-        "date_to":   "2025-12-31",
-        "region":    "PACA",
-        "level":     ["P250","P500"],
-        "limit":     100
-      }'
-echo
-echo "✅ Scraping terminé."
+if [ -f "data/tournaments.json" ]; then
+  echo "✅ Scraping terminé. Fichier mis à jour : data/tournaments.json"
+else
+  echo "⚠️ Scraping terminé, mais data/tournaments.json est introuvable."
+fi
