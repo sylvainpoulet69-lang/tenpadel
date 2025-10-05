@@ -1,262 +1,255 @@
-"""High-level orchestration to scrape TenUp tournaments with Playwright."""
+"""TenUp scraping orchestration usable as a module or CLI."""
 from __future__ import annotations
 
 import argparse
 import json
-import logging
-from datetime import date, datetime, timezone
+import time
+from datetime import datetime
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence
+from typing import Dict, List
 
-from flask import Flask
 from playwright.sync_api import sync_playwright
 
-from extensions import db
 from scrapers.tenup import (
-    TENUP_URL,
     accept_cookies,
-    extract_cards,
-    search_and_sort,
-    select_discipline_padel,
     select_ligue_paca_alpes_maritimes,
-    warn_client_side_date_filter,
+    select_discipline_padel,
+    apply_sort_by_start_date,
+    navigate_to_results,
 )
-from services.tournament_store import TournamentStore
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = BASE_DIR / "data"
-LOG_PATH = DATA_DIR / "logs" / "tenup.log"
-DATABASE_PATH = DATA_DIR / "app.db"
-JSON_PATH = DATA_DIR / "tournaments.json"
-
-DEFAULT_REGION = "PROVENCE ALPES COTE D’AZUR"
-DEFAULT_COMMITTEE = "ALPES MARITIMES"
-
-
-def _ensure_storage() -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    (DATA_DIR / "logs").mkdir(parents=True, exist_ok=True)
-    DATABASE_PATH.touch(exist_ok=True)
-
-
-def _configure_logging() -> logging.Logger:
-    logger = logging.getLogger()
-    if logger.handlers:
-        return logging.getLogger("services.scrape")
-
-    logger.setLevel(logging.INFO)
-    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
-
-    stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(formatter)
-    logger.addHandler(stream_handler)
-
-    file_handler = logging.FileHandler(LOG_PATH, encoding="utf-8")
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
-
-    return logging.getLogger("services.scrape")
+FR_MONTHS = {
+    "janv": 1,
+    "jan.": 1,
+    "févr": 2,
+    "fév.": 2,
+    "mars": 3,
+    "avr": 4,
+    "avr.": 4,
+    "mai": 5,
+    "juin": 6,
+    "juil": 7,
+    "juil.": 7,
+    "août": 8,
+    "sept": 9,
+    "sep.": 9,
+    "oct": 10,
+    "oct.": 10,
+    "nov": 11,
+    "déc": 12,
+    "déc.": 12,
+}
 
 
-def _create_app(sqlite_path: Path) -> Flask:
-    app = Flask("tenup-scraper")
-    app.config.update(
-        SQLALCHEMY_DATABASE_URI=f"sqlite:///{sqlite_path}",
-        SQLALCHEMY_TRACK_MODIFICATIONS=False,
-    )
-    db.init_app(app)
-    return app
+def _fr_to_iso(value: str) -> str | None:
+    import re
 
-
-def _parse_date(value: Optional[str]) -> Optional[date]:
-    if not value:
+    match = re.search(r"(\d{1,2})\s+([a-zéû\.]+)\s+(\d{4})", value.lower())
+    if not match:
         return None
-    return datetime.strptime(value, "%Y-%m-%d").date()
+    day = int(match.group(1))
+    month = FR_MONTHS.get(match.group(2))
+    year = int(match.group(3))
+    if not month:
+        return None
+    return f"{year:04d}-{month:02d}-{day:02d}"
 
 
-def _filter_and_normalise(
-    items: Iterable[dict],
-    *,
-    region: str,
-    date_from: Optional[str],
-    date_to: Optional[str],
-    limit: int,
-    logger: logging.Logger,
-) -> List[dict]:
-    start_bound = _parse_date(date_from)
-    end_bound = _parse_date(date_to)
+def _extract_cards(page, limit: int = 500) -> List[Dict]:
+    import re
 
-    unique: dict[str, dict] = {}
-    for raw in items:
-        tid = raw.get("tournament_id")
-        start_value = raw.get("start_date")
-        end_value = raw.get("end_date") or start_value
-        if not tid or not start_value:
-            continue
-
-        start_date = _parse_date(start_value)
-        end_date = _parse_date(end_value) if end_value else None
-        if start_bound and (not start_date or start_date < start_bound):
-            continue
-        if end_bound:
-            if not end_date:
+    items: List[Dict] = []
+    seen = -1
+    while len(items) < limit and len(items) != seen:
+        seen = len(items)
+        cards = page.locator("article, div[data-testid='event-card']").all()
+        for card in cards:
+            if len(items) >= limit:
+                break
+            try:
+                text = card.inner_text()
+            except Exception:
                 continue
-            if end_date > end_bound:
+            try:
+                heading = card.get_by_role("heading")
+                if heading.count():
+                    name = heading.first.inner_text().strip()
+                else:
+                    name = text.splitlines()[0].strip()
+            except Exception:
+                name = text.splitlines()[0].strip() if text else ""
+            if not name:
                 continue
-
-        start_iso = start_date.isoformat()
-        end_iso = end_date.isoformat() if end_date else start_iso
-
-        normalised = {
-            "tournament_id": tid,
-            "name": raw.get("name", ""),
-            "level": raw.get("level"),
-            "category": raw.get("category") or "PADEL",
-            "club_name": raw.get("club_name"),
-            "club_code": None,
-            "organizer": None,
-            "city": raw.get("city"),
-            "region": region,
-            "address": None,
-            "start_date": start_iso,
-            "end_date": end_iso,
-            "registration_deadline": None,
-            "surface": None,
-            "indoor_outdoor": None,
-            "draw_size": None,
-            "price": None,
-            "status": None,
-            "detail_url": raw.get("detail_url") or TENUP_URL,
-            "registration_url": raw.get("registration_url"),
-        }
-        unique[tid] = normalised
-
-    filtered = list(unique.values())
-    filtered.sort(key=lambda item: (item["start_date"], item["tournament_id"]))
-    if limit:
-        filtered = filtered[:limit]
-
-    logger.info("Fetched %d tournaments.", len(filtered))
-    return filtered
-
-
-def _stamp_records(records: Iterable[dict]) -> List[dict]:
-    now_iso = datetime.now(timezone.utc).isoformat()
-    stamped: List[dict] = []
-    for record in records:
-        payload = dict(record)
-        payload.setdefault("last_scraped_at", now_iso)
-        payload.setdefault("registration_url", None)
-        stamped.append(payload)
-    return stamped
+            raw_dates = re.findall(r"\d{1,2}\s+[a-zéû\.]+\.?\s+\d{4}", text.lower())
+            start_iso = _fr_to_iso(raw_dates[0]) if raw_dates else None
+            end_iso = _fr_to_iso(raw_dates[1]) if len(raw_dates) > 1 else start_iso
+            level_match = re.search(r"\bP(100|250|500|1000|1500|2000)\b", text)
+            level = level_match.group(0) if level_match else None
+            cat_match = re.search(r"\bDM(?:\s*/\s*DX)?|\bSM\s*/\s*SD|\bDX\b", text, re.I)
+            category = cat_match.group(0).upper().replace(" ", "") if cat_match else None
+            location_line = next((line for line in text.splitlines() if "," in line), "")
+            club = city = None
+            if location_line:
+                parts = [segment.strip() for segment in location_line.split(",")]
+                if len(parts) > 1:
+                    club = ", ".join(parts[:-1])
+                    city = parts[-1]
+                else:
+                    club = parts[0]
+                    city = None
+            tournament_id = re.sub(
+                r"\W+", "-", f"{name}-{start_iso}-{end_iso}"
+            ).strip("-").lower()
+            if not tournament_id:
+                continue
+            items.append(
+                {
+                    "tournament_id": tournament_id,
+                    "name": name,
+                    "level": level,
+                    "category": category,
+                    "club_name": club,
+                    "city": city,
+                    "start_date": start_iso,
+                    "end_date": end_iso,
+                    "detail_url": None,
+                    "registration_url": None,
+                }
+            )
+        page.mouse.wheel(0, 2000)
+        time.sleep(0.8)
+    return items[:limit]
 
 
-def _persist(records: Sequence[dict]) -> None:
-    app = _create_app(DATABASE_PATH)
-    with app.app_context():
-        db.create_all()
-        store = TournamentStore(db, JSON_PATH)
-        store.upsert_many(records)
+def _save_results(items: List[Dict]) -> None:
+    from sqlalchemy import Column, Integer, MetaData, String, Table, UniqueConstraint, create_engine
+
+    base = Path(__file__).resolve().parent.parent
+    data_dir = base / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    with open(data_dir / "tournaments.json", "w", encoding="utf-8") as fh:
+        json.dump(items, fh, ensure_ascii=False, indent=2)
+
+    db_path = data_dir / "app.db"
+    engine = create_engine(f"sqlite:///{db_path}")
+    metadata = MetaData()
+    tournaments = Table(
+        "tournaments",
+        metadata,
+        Column("id", Integer, primary_key=True),
+        Column("tournament_id", String, nullable=False),
+        Column("name", String),
+        Column("level", String),
+        Column("category", String),
+        Column("club_name", String),
+        Column("city", String),
+        Column("start_date", String),
+        Column("end_date", String),
+        Column("detail_url", String),
+        Column("registration_url", String),
+        UniqueConstraint("tournament_id", name="uq_tournament_id"),
+    )
+    metadata.create_all(engine)
+    with engine.begin() as connection:
+        for item in items:
+            existing = connection.execute(
+                tournaments.select().where(
+                    tournaments.c.tournament_id == item["tournament_id"]
+                )
+            ).fetchone()
+            payload = {key: item.get(key) for key in item if key in tournaments.c}
+            if existing:
+                connection.execute(
+                    tournaments.update()
+                    .where(tournaments.c.tournament_id == item["tournament_id"])
+                    .values(**payload)
+                )
+            else:
+                connection.execute(tournaments.insert().values(**payload))
 
 
 def scrape_all(
-    region: str,
-    committee: str,
-    date_from: Optional[str] = None,
-    date_to: Optional[str] = None,
+    region: str = "PROVENCE ALPES COTE D’AZUR",
+    committee: str = "ALPES MARITIMES",
+    date_from: str | None = None,
+    date_to: str | None = None,
     limit: int = 500,
-) -> List[dict]:
-    """Scrape TenUp tournaments, filter client-side and persist results."""
+) -> List[Dict]:
+    """Scrape TenUp tournaments, filter dates, sort and persist results."""
 
-    _ensure_storage()
-    logger = _configure_logging()
+    def to_dt(value: str | None) -> datetime | None:
+        return datetime.strptime(value, "%Y-%m-%d") if value else None
 
-    logger.info(
-        "Starting TenUp scrape",
-        extra={"region": region, "committee": committee, "limit": limit},
-    )
-    warn_client_side_date_filter(logger)
-
-    raw_items: List[dict] = []
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
-        context = browser.new_context(
-            locale="fr-FR",
-            timezone_id="Europe/Paris",
-            viewport={"width": 1440, "height": 900},
-        )
-        page = context.new_page()
-        try:
-            page.goto(TENUP_URL, wait_until="domcontentloaded")
-            page.wait_for_load_state("networkidle")
-            accept_cookies(page)
-            select_ligue_paca_alpes_maritimes(
-                page, region=region, committee=committee, logger=logger
-            )
-            select_discipline_padel(page, logger=logger)
-            search_and_sort(page, logger=logger)
-            raw_items = extract_cards(page, limit=limit)
-        finally:
-            context.close()
-            browser.close()
+        page = browser.new_page(locale="fr-FR", viewport={"width": 1440, "height": 900})
+        page.goto("https://tenup.fft.fr/recherche/tournois", wait_until="networkidle")
+        accept_cookies(page)
+        select_ligue_paca_alpes_maritimes(page)
+        select_discipline_padel(page)
+        apply_sort_by_start_date(page)
+        navigate_to_results(page)
+        items = _extract_cards(page, limit=limit)
+        browser.close()
 
-    processed = _filter_and_normalise(
-        raw_items,
+    if date_from:
+        lower = to_dt(date_from)
+        items = [item for item in items if item["start_date"] and to_dt(item["start_date"]) >= lower]
+    if date_to:
+        upper = to_dt(date_to)
+        items = [item for item in items if item["end_date"] and to_dt(item["end_date"]) <= upper]
+
+    items.sort(key=lambda entry: (entry["start_date"] or "9999-99-99"))
+    _save_results(items)
+    return items
+
+
+# --- compatibilité legacy pour app.py
+
+def scrape_tenup(
+    region: str = "PROVENCE ALPES COTE D’AZUR",
+    committee: str = "ALPES MARITIMES",
+    date_from: str | None = None,
+    date_to: str | None = None,
+    limit: int = 500,
+):
+    """Alias backward-compat: certains modules importent 'scrape_tenup'."""
+
+    return scrape_all(
         region=region,
+        committee=committee,
         date_from=date_from,
         date_to=date_to,
         limit=limit,
-        logger=logger,
     )
-    stamped = _stamp_records(processed)
-
-    JSON_PATH.write_text(
-        json.dumps(stamped, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    _persist(stamped)
-    return stamped
 
 
-def _build_arg_parser() -> argparse.ArgumentParser:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Scrape TenUp tournaments (UI only)")
-    parser.add_argument(
-        "--region",
-        default=DEFAULT_REGION,
-        help="Nom de la ligue (par défaut: PROVENCE ALPES COTE D’AZUR)",
-    )
-    parser.add_argument(
-        "--committee",
-        default=DEFAULT_COMMITTEE,
-        help="Nom du comité (par défaut: ALPES MARITIMES)",
-    )
-    parser.add_argument("--date-from", dest="date_from", help="Date de début YYYY-MM-DD")
-    parser.add_argument("--date-to", dest="date_to", help="Date de fin YYYY-MM-DD")
-    parser.add_argument(
-        "--limit",
-        type=int,
-        default=500,
-        help="Nombre maximum de tournois à retourner",
-    )
+    parser.add_argument("--region", default="PROVENCE ALPES COTE D’AZUR")
+    parser.add_argument("--committee", default="ALPES MARITIMES")
+    parser.add_argument("--date-from", dest="date_from")
+    parser.add_argument("--date-to", dest="date_to")
+    parser.add_argument("--limit", type=int, default=500)
     return parser
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
-    parser = _build_arg_parser()
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_parser()
     args = parser.parse_args(argv)
-
     results = scrape_all(
         region=args.region,
         committee=args.committee,
         date_from=args.date_from,
         date_to=args.date_to,
-        limit=int(args.limit or 500),
+        limit=args.limit,
     )
-
     print(f"🎯 TenUp scraping terminé – {len(results)} tournois")
-    print(f"   → Export JSON : {JSON_PATH}")
-    print(f"   → Base SQLite: {DATABASE_PATH}")
+    print("   → Export JSON : data/tournaments.json")
+    print("   → Base SQLite: data/app.db")
     return 0
 
 
-if __name__ == "__main__":  # pragma: no cover - CLI entrypoint
+if __name__ == "__main__":
     raise SystemExit(main())
