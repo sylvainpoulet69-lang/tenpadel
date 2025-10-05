@@ -96,6 +96,130 @@ main {
   outline-offset: 2px;
 }
 
+.filter-form {
+  display: grid;
+  gap: 1.25rem;
+  margin-top: 1.5rem;
+}
+
+.filter-row {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.filter-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.filter-row input {
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 0.55rem 0.75rem;
+  font-size: 0.95rem;
+}
+
+.level-fieldset {
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 1rem 1.2rem;
+}
+
+.level-fieldset legend {
+  font-weight: 600;
+  color: var(--muted);
+  padding: 0 0.4rem;
+}
+
+.level-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.level-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.filter-actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+button.primary,
+.filter-actions .primary,
+a.primary {
+  border-radius: 999px;
+  padding: 0.6rem 1.4rem;
+  font-weight: 600;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  text-decoration: none;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+button.secondary,
+.filter-actions .secondary,
+a.secondary {
+  border-radius: 999px;
+  padding: 0.6rem 1.4rem;
+  font-weight: 600;
+  background: #fff;
+  border: 1px solid var(--border-color);
+  color: var(--muted);
+  cursor: pointer;
+  text-decoration: none;
+  transition: transform 0.2s ease, color 0.2s ease;
+}
+
+a.secondary.disabled {
+  pointer-events: none;
+  opacity: 0.6;
+}
+
+button.primary:disabled,
+a.primary.disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+a.primary.disabled {
+  pointer-events: none;
+}
+
+button.primary:hover,
+button.primary:focus,
+a.primary:hover,
+a.primary:focus,
+.filter-actions .primary:hover,
+.filter-actions .primary:focus {
+  transform: translateY(-1px);
+  box-shadow: 0 14px 30px -20px rgba(34, 68, 255, 0.7);
+}
+
+button.secondary:hover,
+button.secondary:focus,
+a.secondary:hover,
+a.secondary:focus,
+.filter-actions .secondary:hover,
+.filter-actions .secondary:focus {
+  transform: translateY(-1px);
+  color: var(--accent);
+}
+
 .calendar-header {
   display: flex;
   justify-content: space-between;
@@ -167,9 +291,22 @@ main {
   gap: 1rem;
 }
 
+.list-actions {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
 #tournament-count {
   font-weight: 600;
   color: var(--muted);
+}
+
+.admin-status {
+  margin: 0 0 1rem;
+  color: var(--muted);
+  font-size: 0.9rem;
 }
 
 .tournament-list {
@@ -208,6 +345,10 @@ main {
   color: #fff;
 }
 
+.badge.status {
+  font-size: 0.8rem;
+}
+
 .sex-male {
   background: var(--male-color);
 }
@@ -218,6 +359,19 @@ main {
 
 .sex-mixed {
   background: var(--mixed-color);
+}
+
+.status-open {
+  background: #2f9e44;
+}
+
+.status-closed {
+  background: #adb5bd;
+  color: #1f2d3d;
+}
+
+.status-unknown {
+  background: #f59f00;
 }
 
 .tournament-card .club {

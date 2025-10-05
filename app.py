@@ -1,6 +1,7 @@
 """Padel tournament calendar and registration application."""
 from __future__ import annotations
 
+import atexit
 import csv
 import json
 import logging
@@ -12,12 +13,22 @@ from io import StringIO
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from apscheduler.schedulers.background import BackgroundScheduler
 from flask import (Flask, Response, abort, jsonify, render_template, request,
                    send_file)
+from loguru import logger as loguru_logger
+
+from api.tournaments import bp as tournaments_bp
+from extensions import db
+from services.scrape import scrape_tenup
+from services.tournament_store import TournamentStore
+from services.tournament_store_models import TournamentRecord
 
 CONFIG_PATH = Path("config.json")
 TOURNAMENTS_PATH = Path("data/tournaments.json")
 REGISTRATIONS_PATH = Path("data/registrations.csv")
+DATABASE_PATH = Path("data/app.db")
+TENUP_SCRAPE_JOB_ID = "tenup_scrape"
 CSV_HEADERS = [
     "timestamp",
     "tournament_id",
@@ -40,6 +51,7 @@ CSV_HEADERS = [
 ]
 
 logger = logging.getLogger("tenpadel.app")
+SCHEDULER: Optional[BackgroundScheduler] = None
 
 
 @dataclass
@@ -66,6 +78,11 @@ def load_config() -> Dict[str, object]:
         raise FileNotFoundError("config.json is missing")
     with CONFIG_PATH.open("r", encoding="utf-8") as fh:
         return json.load(fh)
+
+
+def ensure_core_directories() -> None:
+    TOURNAMENTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
 def ensure_registration_file() -> None:
@@ -102,7 +119,30 @@ def normalise_club(value: str) -> str:
     return normalise_text(value).upper()
 
 
+ensure_core_directories()
 CONFIG = load_config()
+TENUP_CONFIG = CONFIG.get("tenup", {})
+ADMIN_TOKEN = CONFIG.get("admin_token")
+
+app.config.update(
+    SQLALCHEMY_DATABASE_URI=f"sqlite:///{DATABASE_PATH}",
+    SQLALCHEMY_TRACK_MODIFICATIONS=False,
+    JSON_SORT_KEYS=False,
+    TENUP_CONFIG=TENUP_CONFIG,
+    ADMIN_TOKEN=ADMIN_TOKEN,
+)
+db.init_app(app)
+
+log_path = Path(TENUP_CONFIG.get("log_path", "data/logs/tenup.log"))
+log_path.parent.mkdir(parents=True, exist_ok=True)
+loguru_logger.add(log_path, rotation="10 MB", retention=5, enqueue=True)
+
+with app.app_context():
+    db.create_all()
+
+TOURNAMENT_STORE = TournamentStore(db, TOURNAMENTS_PATH)
+app.register_blueprint(tournaments_bp)
+
 REGISTRATION_CONF = RegistrationConfig(
     max_teams_per_tournament=(
         int(CONFIG.get("registration", {}).get("max_teams_per_tournament"))
@@ -127,12 +167,137 @@ for token, payload in CONFIG.get("club_tokens", {}).items():
 submission_tracker: Dict[str, List[float]] = {}
 
 
+def _prepare_scrape_kwargs(payload: Dict[str, object]) -> Dict[str, object]:
+    categories_raw = payload.get("categories") or payload.get("category")
+    if isinstance(categories_raw, str):
+        categories = [token.strip().upper() for token in categories_raw.split(",") if token.strip()]
+    elif isinstance(categories_raw, (list, tuple)):
+        categories = [str(token).upper() for token in categories_raw if str(token).strip()]
+    else:
+        categories = None
+
+    level_raw = payload.get("level") or payload.get("levels")
+    if isinstance(level_raw, str):
+        levels = [token.strip().upper() for token in level_raw.split(",") if token.strip()]
+    elif isinstance(level_raw, (list, tuple)):
+        levels = [str(token).upper() for token in level_raw if str(token).strip()]
+    else:
+        levels = None
+
+    limit_raw = payload.get("limit")
+    try:
+        limit_value = int(limit_raw)
+    except (TypeError, ValueError):
+        limit_value = int(TENUP_CONFIG.get("max_results", 500))
+    else:
+        limit_value = max(1, min(limit_value, int(TENUP_CONFIG.get("max_results", 500))))
+
+    region_value = payload.get("region")
+    if not region_value:
+        region_value = TENUP_CONFIG.get("default_region")
+
+    city_value = payload.get("city")
+    if not city_value and not region_value:
+        city_value = TENUP_CONFIG.get("default_city")
+
+    radius_value = payload.get("radius_km") or payload.get("radius")
+    if radius_value in ("", None):
+        radius_value = None
+    if radius_value is None and city_value and TENUP_CONFIG.get("default_radius_km") is not None:
+        radius_value = TENUP_CONFIG.get("default_radius_km")
+    try:
+        radius_value = int(radius_value) if radius_value is not None else None
+    except (TypeError, ValueError):
+        radius_value = None
+
+    kwargs = {
+        "categories": categories,
+        "date_from": payload.get("date_from") or payload.get("from"),
+        "date_to": payload.get("date_to") or payload.get("to"),
+        "region": region_value,
+        "city": city_value,
+        "radius_km": radius_value,
+        "level": levels,
+        "limit": limit_value,
+    }
+    return kwargs
+
+
+def execute_tenup_scrape(**kwargs: object) -> Dict[str, object]:
+    tournaments, meta = scrape_tenup(CONFIG, **kwargs)
+    stats = TOURNAMENT_STORE.upsert_many(tournaments)
+    response = {"ok": True, **meta, **stats.as_dict()}
+    return response
+
+
+def run_scheduled_scrape() -> None:
+    with app.app_context():
+        try:
+            result = execute_tenup_scrape(**_prepare_scrape_kwargs({}))
+            loguru_logger.info(
+                "Scheduled TenUp scrape finished",
+                inserted=result.get("inserted"),
+                updated=result.get("updated"),
+                skipped=result.get("skipped"),
+                duration=result.get("duration_s"),
+            )
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.exception("Scheduled TenUp scrape failed: %s", exc)
+
+
+def start_scheduler() -> None:
+    global SCHEDULER
+    interval_hours = TENUP_CONFIG.get("scrape_interval_hours")
+    if not interval_hours:
+        return
+    try:
+        hours = max(1, int(interval_hours))
+    except (TypeError, ValueError):
+        hours = 6
+
+    if SCHEDULER and SCHEDULER.running:
+        return
+
+    scheduler = BackgroundScheduler(timezone="Europe/Paris")
+    scheduler.add_job(
+        run_scheduled_scrape,
+        "interval",
+        hours=hours,
+        id=TENUP_SCRAPE_JOB_ID,
+        replace_existing=True,
+    )
+    scheduler.start()
+    SCHEDULER = scheduler
+    atexit.register(lambda: scheduler.shutdown(wait=False))
+
+
+if not app.config.get("TESTING"):
+    start_scheduler()
+
+
 def prune_submission_tracker(now: float) -> None:
     window = REGISTRATION_CONF.throttle_window_seconds
     for ip, timestamps in list(submission_tracker.items()):
         submission_tracker[ip] = [ts for ts in timestamps if now - ts <= window]
-        if not submission_tracker[ip]:
-            submission_tracker.pop(ip, None)
+    if not submission_tracker[ip]:
+        submission_tracker.pop(ip, None)
+
+
+@app.route("/admin/scrape", methods=["POST"])
+def admin_scrape() -> Response:
+    expected = app.config.get("ADMIN_TOKEN")
+    token = request.headers.get("X-ADMIN-TOKEN")
+    if not expected or token != expected:
+        return jsonify({"ok": False, "message": "Jeton administrateur invalide."}), 401
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        params = _prepare_scrape_kwargs(payload)
+        result = execute_tenup_scrape(**params)
+    except Exception as exc:  # pragma: no cover - defensive logging
+        logger.exception("Manual TenUp scrape failed: %s", exc)
+        return jsonify({"ok": False, "message": "Échec du rafraîchissement TenUp."}), 500
+    return jsonify(result)
 
 
 @app.route("/")
@@ -141,19 +306,13 @@ def index() -> str:
         "index.html",
         licence_regex=REGISTRATION_CONF.licence_regex,
         max_teams=REGISTRATION_CONF.max_teams_per_tournament,
+        tenup_defaults={
+            "region": TENUP_CONFIG.get("default_region"),
+            "city": TENUP_CONFIG.get("default_city"),
+            "radius_km": TENUP_CONFIG.get("default_radius_km"),
+            "max_results": TENUP_CONFIG.get("max_results", 500),
+        },
     )
-
-
-@app.route("/api/tournaments")
-def api_tournaments() -> Response:
-    if not TOURNAMENTS_PATH.exists():
-        return jsonify({"generated_at": None, "source": DEFAULT_SOURCE, "tournaments": []})
-    with TOURNAMENTS_PATH.open("r", encoding="utf-8") as fh:
-        data = json.load(fh)
-    return jsonify(data)
-
-
-DEFAULT_SOURCE = "tenup_scrape_playwright_paged"
 
 
 def _validate_payload(payload: Dict[str, object]) -> Optional[Response]:

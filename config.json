@@ -1,15 +1,15 @@
 {
   "tenup": {
-    "start_url": "https://tenup.fft.fr/tenup/tournois-padel",
+    "base_url": "https://tenup.fft.fr/recherche/tournois",
     "headless": true,
-    "slow_mo_ms": 0,
-    "auto_scroll": true,
-    "max_scroll_loops": 15,
-    "scroll_pause_ms": 400,
-    "save_snapshot_html": true,
-    "snapshot_path": "data/snapshot.html",
-    "tournaments_path": "data/tournaments.json",
-    "storage_state_path": "data/storage_state.json"
+    "default_region": "PACA",
+    "default_city": "Cagnes-sur-Mer",
+    "default_radius_km": 150,
+    "request_timeout_ms": 30000,
+    "max_results": 500,
+    "scrape_interval_hours": 6,
+    "respect_rate_limit": true,
+    "log_path": "data/logs/tenup.log"
   },
   "registration": {
     "max_teams_per_tournament": 64,
@@ -22,5 +22,6 @@
       "club_slug": "ULTRA COUNTRY CLUB",
       "label": "Ultra Country Club"
     }
-  }
+  },
+  "admin_token": "CHANGE_ME_STRONG_TOKEN"
 }

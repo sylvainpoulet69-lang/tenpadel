@@ -1,65 +1,143 @@
-# Ten Padel – Calendrier & Inscriptions
+# Tenpadel – agrégateur TenUp Padel
 
-Application Flask qui agrège les tournois Padel TenUp, propose un calendrier filtrable et recueille les inscriptions d'équipes.
+Application Flask centralisant les tournois de padel TenUp :
 
-## Structure
+* Scraper Playwright/HTTP (`scrapers/tenup.py`) produisant un modèle normalisé `Tournament` (Pydantic).
+* Persistance SQLite via SQLAlchemy (`data/app.db`) avec export JSON miroir (`data/tournaments.json`).
+* API REST + interface web pour explorer les tournois, gérer les filtres (catégorie, période, zone, niveau) et déclencher un scraping administrateur.
+* Module d’inscription existant conservé (CSV) avec modal côté front.
+
+## Structure du projet
 
 ```
-padel-mvp/
-├── app.py                  # Application Flask + API REST
-├── fetch_auto.py           # Scraper Playwright TenUp
-├── config.json             # Paramètres scraping + règles d'inscription
+tenpadel/
+├── app.py                        # Application Flask principale
+├── api/
+│   └── tournaments.py           # API REST /api/tournaments
+├── extensions.py                # Instances partagées (SQLAlchemy)
+├── models/
+│   └── tournament.py            # Modèle Pydantic normalisé
+├── scrapers/
+│   └── tenup.py                 # Scraper TenUp (Playwright + CLI)
+├── services/
+│   ├── scrape.py                # Orchestration scraping
+│   ├── tournament_store.py      # Upsert + export JSON
+│   └── tournament_store_models.py
 ├── templates/
-│   ├── index.html          # Calendrier public + formulaire modal
-│   └── club.html           # Vue filtrée pour les clubs
-├── static/
-│   └── style.css           # Styles globaux (UI calendrier / modal)
-└── data/
-    ├── tournaments.json    # Tournois consolidés (scraper)
-    ├── registrations.csv   # Inscriptions équipes (export)
-    ├── snapshot.html       # Snapshot TenUp (audit)
-    └── storage_state.json  # État Playwright
+│   ├── index.html               # UI publique (filtres + admin refresh)
+│   └── club.html                # Vue club existante
+├── static/style.css             # Styles UI
+├── data/
+│   ├── app.db                   # Base SQLite
+│   ├── tournaments.json         # Export JSON pour le front
+│   ├── registrations.csv        # Inscriptions équipes
+│   ├── logs/tenup.log           # Logs scraper (rotation)
+│   └── errors/                  # Captures Playwright (si erreur)
+├── config.json                  # Configuration globale
+└── requirements.txt             # Dépendances Python
 ```
 
-## Prérequis
-
-- Python 3.11+
-- Dépendances Python : `flask`, `playwright` (+ `playwright install chromium`)
-
-## Scraping TenUp
+## Installation
 
 ```bash
-python fetch_auto.py
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+playwright install
 ```
 
-Le script lit `config.json`, suit la pagination « Suivant », convertit les URL relatives en absolues, détecte la catégorie (P25…P2000) et le sexe (DM/DD/DX), et calcule un `tournament_id` stable (SHA-1 de l'URL). Les résultats sont dédoublonnés et écrits dans `data/tournaments.json`.
-
-## Lancement de l'app
+## Lancer l’application
 
 ```bash
 python app.py
 ```
 
-Endpoints :
+* L’API `/api/tournaments` fournit des paramètres `category`, `from`, `to`, `region`, `city`, `radius_km`, `level`, `limit`, `page`, `sort`.
+* La page `/` consomme l’API et propose :
+  - filtres catégorie (Tous/H/F/Mixte), période, région/ville/rayon, niveaux P25→P1000.
+  - calendrier interactif + cartes avec statut d’inscription et accès direct TenUp.
+  - bouton `Rafraîchir (admin)` si `?admin=1` (demande du token pour déclencher `/admin/scrape`).
+* Les inscriptions équipes (CSV) fonctionnent comme auparavant via `/register`.
 
-- `GET /` : calendrier + liste filtrable.
-- `GET /api/tournaments` : JSON des tournois.
-- `POST /register` : enregistre une équipe (anti-doublons, limite par tournoi, throttling IP).
-- `GET /registrations.csv` : export global.
-- `GET /club/<token>` : vue filtrée club (token → `config.json`).
-- `GET /club/<token>/registrations.csv` : export CSV filtré.
+## Scraping TenUp
 
-## Configuration
+### Scraping manuel depuis l’API admin
 
-`config.json` centralise les options :
+```bash
+curl -X POST http://127.0.0.1:5000/admin/scrape \
+  -H "Content-Type: application/json" \
+  -H "X-ADMIN-TOKEN: <ADMIN_TOKEN>" \
+  -d '{
+        "categories": ["H", "F", "MIXTE"],
+        "date_from": "2025-10-01",
+        "date_to": "2025-12-31",
+        "region": "PACA",
+        "level": ["P250", "P500"],
+        "limit": 200
+      }'
+```
 
-- `tenup.*` : paramètres Playwright (URL, headless, scroll…).
-- `registration.*` : limite d'équipes, regex licence, throttling IP.
-- `club_tokens` : tokens → { `club_slug`, `label` } pour la vue club.
+Réponse : `{"ok": true, "inserted": X, "updated": Y, "skipped": Z, "duration_s": 12.3, ...}`.
 
-## Données
+### CLI `python -m scrapers.tenup`
 
-- `data/tournaments.json` : format conforme au cahier des charges (date ISO + `date_text`).
-- `data/registrations.csv` : colonnes complètes (tournoi, joueurs 1 & 2, notes, IP).
+Mode démonstration (écrit `data/tenup-sample.json`) :
 
-Le formulaire modal impose 2 licences valides (`^[A-Z0-9]{6,12}$` par défaut), au moins un téléphone et applique les validations côté client + serveur.
+```bash
+python -m scrapers.tenup --dry-run \
+  --category H --category MIXTE \
+  --from 2025-10-01 --to 2025-12-31 \
+  --region PACA --limit 50
+```
+
+Sans `--dry-run`, les tournois normalisés sont affichés en JSON (stdout).
+
+### Scheduler automatique
+
+`app.py` installe un job APScheduler (`scrape_interval_hours` dans `config.json`, par défaut 6 h). Logs structurés dans `data/logs/tenup.log`.
+
+## Base de données & modèle
+
+* Table `tournaments` (SQLite) : colonnes normalisées du modèle Pydantic + `id`, `created_at`, `updated_at`.
+* Contrainte d’unicité `(source, external_id, start_date)` → upsert.
+* Export JSON miroir `data/tournaments.json` mis à jour après chaque upsert.
+
+## Configuration (`config.json`)
+
+```json
+{
+  "tenup": {
+    "base_url": "https://tenup.fft.fr/recherche/tournois",
+    "headless": true,
+    "default_region": "PACA",
+    "default_city": "Cagnes-sur-Mer",
+    "default_radius_km": 150,
+    "request_timeout_ms": 30000,
+    "max_results": 500,
+    "scrape_interval_hours": 6,
+    "respect_rate_limit": true,
+    "log_path": "data/logs/tenup.log"
+  },
+  "admin_token": "CHANGE_ME_STRONG_TOKEN",
+  "registration": {
+    "max_teams_per_tournament": 64,
+    "licence_regex": "^[A-Z0-9]{6,12}$",
+    "throttle_window_seconds": 60,
+    "throttle_max_submissions": 2
+  },
+  "club_tokens": {
+    "sampletoken123": {
+      "club_slug": "ULTRA COUNTRY CLUB",
+      "label": "Ultra Country Club"
+    }
+  }
+}
+```
+
+## Points clés
+
+* Scraper Playwright + fallback DOM (accepte cookies, applique filtres TenUp, pagine `Charger plus`, dédoublonne).
+* Logs rotation 10 Mo x5 (`loguru`), respect rate limit (0.3–0.9 s).
+* API Flask-SQLAlchemy (paginée, tri ASC/DESC sur `start_date`).
+* Front : badge état inscriptions, lien TenUp, bouton pré-inscription existant, admin refresh.
+* CLI/offline : `python -m scrapers.tenup` pour tester ou produire un JSON d’échantillon.
