@@ -446,7 +446,7 @@ def _load_config() -> Dict[str, object]:
         return json.load(fh)
 
 
-def _cli_args() -> argparse.Namespace:
+def _cli_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Scrape TenUp padel tournaments")
     parser.add_argument("--category", action="append", help="Filtrer par catégorie (H, F, MIXTE)")
     parser.add_argument("--from", dest="date_from", help="Date de début (YYYY-MM-DD)")
@@ -458,11 +458,11 @@ def _cli_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=200, help="Nombre maximum de tournois à récupérer")
     parser.add_argument("--output", help="Fichier JSON de sortie")
     parser.add_argument("--dry-run", action="store_true", help="Écrire un JSON de démonstration")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def _cli_main() -> int:  # pragma: no cover - CLI entry point
-    args = _cli_args()
+def _cli_main(argv: Optional[Sequence[str]] = None) -> int:  # pragma: no cover - CLI entry point
+    args = _cli_args(argv)
     config = _load_config()
     scraper = TenUpScraper(config.get("tenup", {}))
 
@@ -501,6 +501,10 @@ def _cli_main() -> int:  # pragma: no cover - CLI entry point
     return 0
 
 
+def main(argv: Optional[Sequence[str]] = None) -> int:  # pragma: no cover - CLI entry point
+    return _cli_main(argv)
+
+
 if __name__ == "__main__":  # pragma: no cover - CLI behaviour
-    raise SystemExit(_cli_main())
+    raise SystemExit(main())
 

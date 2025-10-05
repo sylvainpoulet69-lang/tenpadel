@@ -37,16 +37,38 @@ tenpadel/
 └── requirements.txt             # Dépendances Python
 ```
 
-## Installation
+## Installation manuelle (alternative aux boutons)
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip setuptools wheel
 pip install -r requirements.txt
-playwright install
+python -m playwright install chromium
+python app.py
 ```
 
-## Lancer l’application
+## Boutons macOS prêts à l’emploi
+
+Chaque fichier `*.command` est exécutable depuis Finder (double-clic). Lors du tout
+premier lancement macOS peut bloquer le script : ouvrez **Réglages Système →
+Confidentialité & Sécurité** puis cliquez sur **Ouvrir quand même**.
+
+| Script | Rôle |
+| --- | --- |
+| `Start-TenPadel.command` | Crée/active `.venv`, installe les dépendances, prépare `data/` et lance `app.py`. |
+| `Stop-TenPadel.command` | Coupe le serveur Flask qui écoute sur `http://127.0.0.1:5000`. |
+| `Open-App.command` | Ouvre l’interface dans le navigateur par défaut. |
+| `Scrape-TenUp.command` | Active l’environnement, assure Playwright, exporte `PYTHONPATH` puis lance `python -m services.scrape`. |
+| `Scrape-TenUp-Module.command` | Variante qui exécute directement `python -m scrapers.tenup`. |
+
+> ℹ️ L’exécution de `Scrape-TenUp.command` n’a **pas** besoin que le serveur Flask
+> tourne : la persistance SQLite + JSON est réalisée hors-ligne via le module Python.
+
+Toutes ces commandes sont idempotentes : relancez-les autant de fois que
+nécessaire.
+
+## Lancer l’application (mode manuel)
 
 ```bash
 python app.py

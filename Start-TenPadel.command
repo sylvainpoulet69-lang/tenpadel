@@ -1,25 +1,24 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 cd "$(dirname "$0")" || exit 1
+
 echo "🚀 Starting TenPadel…"
 
-# 1) venv
+PY="/usr/local/bin/python3"
+[ -x "$PY" ] || PY="python3"
+
 if [ ! -d ".venv" ]; then
-  /usr/bin/python3 -m venv .venv || python3 -m venv .venv
+  "$PY" -m venv .venv
 fi
 source .venv/bin/activate
 
-# 2) deps visibles
 pip install --upgrade pip setuptools wheel
 pip install -r requirements.txt
-
-# 3) playwright
 python -m playwright install chromium
 
-# 4) data
 mkdir -p data data/logs
 touch data/app.db
+touch data/tournaments.json
 chmod -R u+rwX,go+rwX data
 
-# 5) démarrer
 python app.py
