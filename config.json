@@ -1,0 +1,26 @@
+{
+  "tenup": {
+    "start_url": "https://tenup.fft.fr/tenup/tournois-padel",
+    "headless": true,
+    "slow_mo_ms": 0,
+    "auto_scroll": true,
+    "max_scroll_loops": 15,
+    "scroll_pause_ms": 400,
+    "save_snapshot_html": true,
+    "snapshot_path": "data/snapshot.html",
+    "tournaments_path": "data/tournaments.json",
+    "storage_state_path": "data/storage_state.json"
+  },
+  "registration": {
+    "max_teams_per_tournament": 64,
+    "licence_regex": "^[A-Z0-9]{6,12}$",
+    "throttle_window_seconds": 60,
+    "throttle_max_submissions": 2
+  },
+  "club_tokens": {
+    "sampletoken123": {
+      "club_slug": "ULTRA COUNTRY CLUB",
+      "label": "Ultra Country Club"
+    }
+  }
+}

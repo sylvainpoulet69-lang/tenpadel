@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>Calendrier Padel & Inscriptions</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  </head>
+  <body>
+    <header class="site-header">
+      <h1>Padel – Tournois &amp; Inscriptions</h1>
+      <p class="subtitle">Suivez les tournois TenUp et inscrivez vos équipes.</p>
+    </header>
+
+    <main>
+      <section class="filters">
+        <h2>Filtres</h2>
+        <div class="filter-buttons" role="group" aria-label="Filtrer par catégorie de sexe">
+          <button type="button" data-sex="DM" class="filter-button active" aria-pressed="true">Hommes</button>
+          <button type="button" data-sex="DX" class="filter-button active" aria-pressed="true">Mixte</button>
+          <button type="button" data-sex="DD" class="filter-button active" aria-pressed="true">Dames</button>
+        </div>
+      </section>
+
+      <section class="calendar" aria-label="Calendrier des tournois">
+        <div class="calendar-header">
+          <button type="button" class="calendar-nav" data-direction="prev" aria-label="Mois précédent">&#9664;</button>
+          <h2 id="calendar-title">Calendrier</h2>
+          <button type="button" class="calendar-nav" data-direction="next" aria-label="Mois suivant">&#9654;</button>
+        </div>
+        <table class="calendar-table" aria-describedby="calendar-title">
+          <thead>
+            <tr>
+              <th scope="col">Lun</th>
+              <th scope="col">Mar</th>
+              <th scope="col">Mer</th>
+              <th scope="col">Jeu</th>
+              <th scope="col">Ven</th>
+              <th scope="col">Sam</th>
+              <th scope="col">Dim</th>
+            </tr>
+          </thead>
+          <tbody id="calendar-body"></tbody>
+        </table>
+        <p class="calendar-legend">Les jours avec un point jaune contiennent au moins un tournoi.</p>
+      </section>
+
+      <section class="tournaments">
+        <div class="list-header">
+          <h2>Tournois</h2>
+          <span id="tournament-count" aria-live="polite">0 tournoi</span>
+        </div>
+        <div id="tournament-list" class="tournament-list" aria-live="polite"></div>
+        <p id="empty-state" class="empty-state" hidden>Aucun tournoi ne correspond aux filtres sélectionnés.</p>
+      </section>
+    </main>
+
+    <dialog id="registration-modal" aria-labelledby="modal-title">
+      <form id="registration-form" method="post" novalidate>
+        <header class="modal-header">
+          <h2 id="modal-title">Inscription au tournoi</h2>
+          <button type="button" class="close-button" aria-label="Fermer">&times;</button>
+        </header>
+        <div class="modal-body">
+          <div class="tournament-summary">
+            <p><strong id="modal-tournament-title"></strong></p>
+            <p id="modal-tournament-date" class="muted"></p>
+            <p id="modal-tournament-club" class="muted"></p>
+          </div>
+
+          <input type="hidden" name="tournament_id" id="input-tournament-id" required />
+          <input type="hidden" name="tournament_title" id="input-tournament-title" required />
+          <input type="hidden" name="tournament_date" id="input-tournament-date" required />
+          <input type="hidden" name="tournament_url" id="input-tournament-url" required />
+          <input type="hidden" name="club" id="input-club" required />
+          <input type="hidden" name="sex" id="input-sex" required />
+          <input type="hidden" name="category" id="input-category" required />
+
+          <fieldset class="form-section">
+            <legend>Joueur 1</legend>
+            <label>
+              Nom (optionnel)
+              <input type="text" name="player1_name" autocomplete="name" />
+            </label>
+            <label>
+              Licence*
+              <input type="text" name="player1_licence" id="input-player1-licence" pattern="{{ licence_regex }}" required autocomplete="off" />
+            </label>
+            <label>
+              Téléphone*
+              <input type="tel" name="player1_phone" id="input-player1-phone" required autocomplete="tel" />
+            </label>
+            <label>
+              Email
+              <input type="email" name="player1_email" autocomplete="email" />
+            </label>
+          </fieldset>
+
+          <fieldset class="form-section">
+            <legend>Joueur 2</legend>
+            <label>
+              Nom (optionnel)
+              <input type="text" name="player2_name" autocomplete="name" />
+            </label>
+            <label>
+              Licence*
+              <input type="text" name="player2_licence" id="input-player2-licence" pattern="{{ licence_regex }}" required autocomplete="off" />
+            </label>
+            <label>
+              Téléphone
+              <input type="tel" name="player2_phone" autocomplete="tel" />
+            </label>
+            <label>
+              Email
+              <input type="email" name="player2_email" autocomplete="email" />
+            </label>
+          </fieldset>
+
+          <label class="notes-label">
+            Notes (optionnel)
+            <textarea name="notes" rows="2"></textarea>
+          </label>
+
+          <p class="rgpd">Les informations saisies sont utilisées uniquement pour gérer les inscriptions au tournoi.</p>
+          <p class="form-feedback" id="form-feedback" role="alert" hidden></p>
+        </div>
+        <footer class="modal-footer">
+          <button type="submit" id="submit-button">Envoyer l'inscription</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <template id="tournament-card-template">
+      <article class="tournament-card">
+        <header>
+          <span class="badge" data-role="sex-badge"></span>
+          <h3 data-role="title"></h3>
+        </header>
+        <p class="club" data-role="club"></p>
+        <ul class="details">
+          <li><span class="label">Catégorie</span> <span data-role="category"></span></li>
+          <li><span class="label">Date</span> <span data-role="date"></span></li>
+        </ul>
+        <div class="actions">
+          <a data-role="tenup-link" target="_blank" rel="noopener" class="secondary">Voir sur TenUp</a>
+          <button type="button" class="primary" data-role="register-button">S'inscrire</button>
+        </div>
+      </article>
+    </template>
+
+    <script>
+      const LICENCE_REGEX = new RegExp({{ licence_regex|tojson }}, 'i');
+      const MAX_TEAMS = {{ max_teams|default('null') }};
+      const SEX_LABELS = { DM: 'Hommes', DD: 'Dames', DX: 'Mixte' };
+      const SEX_CLASSES = { DM: 'sex-male', DD: 'sex-female', DX: 'sex-mixed' };
+
+      const state = {
+        tournaments: [],
+        filters: new Set(['DM', 'DD', 'DX']),
+        calendarDate: new Date(),
+      };
+
+      const listContainer = document.getElementById('tournament-list');
+      const countLabel = document.getElementById('tournament-count');
+      const emptyState = document.getElementById('empty-state');
+      const calendarBody = document.getElementById('calendar-body');
+      const calendarTitle = document.getElementById('calendar-title');
+      const modal = document.getElementById('registration-modal');
+      const form = document.getElementById('registration-form');
+      const feedback = document.getElementById('form-feedback');
+      const submitButton = document.getElementById('submit-button');
+      const closeButton = modal.querySelector('.close-button');
+
+      async function loadTournaments() {
+        const response = await fetch('/api/tournaments');
+        const payload = await response.json();
+        state.tournaments = (payload.tournaments || []).map(t => ({
+          ...t,
+          date: t.date || null,
+          date_text: t.date_text || 'Date inconnue',
+        }));
+        render();
+      }
+
+      function render() {
+        renderCalendar();
+        renderList();
+      }
+
+      function renderCalendar() {
+        const current = new Date(state.calendarDate.getTime());
+        const year = current.getFullYear();
+        const month = current.getMonth();
+        const firstDay = new Date(year, month, 1);
+        const startDay = (firstDay.getDay() + 6) % 7; // convert Sunday=0 to Monday=0
+        const daysInMonth = new Date(year, month + 1, 0).getDate();
+        calendarTitle.textContent = current.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+        calendarBody.innerHTML = '';
+
+        let day = 1 - startDay;
+        for (let week = 0; week < 6; week++) {
+          const row = document.createElement('tr');
+          for (let weekday = 0; weekday < 7; weekday++) {
+            const cell = document.createElement('td');
+            if (day < 1 || day > daysInMonth) {
+              cell.classList.add('empty');
+            } else {
+              cell.textContent = day;
+              const isoDate = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+              if (state.tournaments.some(t => t.date === isoDate)) {
+                const marker = document.createElement('span');
+                marker.className = 'calendar-marker';
+                marker.title = 'Tournoi disponible';
+                cell.appendChild(marker);
+                cell.classList.add('has-tournament');
+              }
+            }
+            row.appendChild(cell);
+            day += 1;
+          }
+          calendarBody.appendChild(row);
+          if (day > daysInMonth) {
+            break;
+          }
+        }
+      }
+
+      function renderList() {
+        listContainer.innerHTML = '';
+        const active = state.tournaments.filter(t => state.filters.has((t.sex || 'DX')));
+        countLabel.textContent = `${active.length} ${active.length > 1 ? 'tournois' : 'tournoi'}`;
+        if (active.length === 0) {
+          emptyState.hidden = false;
+          return;
+        }
+        emptyState.hidden = true;
+        const template = document.getElementById('tournament-card-template');
+        active
+          .sort((a, b) => {
+            if (a.date && b.date) {
+              return a.date.localeCompare(b.date);
+            }
+            if (a.date) return -1;
+            if (b.date) return 1;
+            return a.title.localeCompare(b.title);
+          })
+          .forEach(tournament => {
+            const fragment = template.content.cloneNode(true);
+            const badge = fragment.querySelector('[data-role="sex-badge"]');
+            const title = fragment.querySelector('[data-role="title"]');
+            const club = fragment.querySelector('[data-role="club"]');
+            const category = fragment.querySelector('[data-role="category"]');
+            const date = fragment.querySelector('[data-role="date"]');
+            const tenupLink = fragment.querySelector('[data-role="tenup-link"]');
+            const registerButton = fragment.querySelector('[data-role="register-button"]');
+
+            const sex = tournament.sex || 'DX';
+            badge.textContent = SEX_LABELS[sex] || 'Mixte';
+            badge.classList.add('badge', SEX_CLASSES[sex] || SEX_CLASSES.DX);
+            title.textContent = tournament.title;
+            club.textContent = tournament.club || 'Club à confirmer';
+            category.textContent = tournament.category || 'N/C';
+            date.textContent = tournament.date ? new Date(tournament.date).toLocaleDateString('fr-FR') : tournament.date_text;
+            tenupLink.href = tournament.url;
+
+            registerButton.addEventListener('click', () => openModal(tournament));
+
+            listContainer.appendChild(fragment);
+          });
+      }
+
+      function openModal(tournament) {
+        form.reset();
+        feedback.hidden = true;
+        submitButton.disabled = false;
+        submitButton.textContent = "Envoyer l'inscription";
+
+        document.getElementById('modal-tournament-title').textContent = tournament.title;
+        document.getElementById('modal-tournament-date').textContent = tournament.date
+          ? new Date(tournament.date).toLocaleDateString('fr-FR')
+          : tournament.date_text;
+        document.getElementById('modal-tournament-club').textContent = tournament.club || '';
+
+        document.getElementById('input-tournament-id').value = tournament.tournament_id;
+        document.getElementById('input-tournament-title').value = tournament.title;
+        document.getElementById('input-tournament-date').value = tournament.date || tournament.date_text || '';
+        document.getElementById('input-tournament-url').value = tournament.url;
+        document.getElementById('input-club').value = tournament.club || '';
+        document.getElementById('input-sex').value = tournament.sex || '';
+        document.getElementById('input-category').value = tournament.category || '';
+
+        if (typeof MAX_TEAMS === 'number') {
+          feedback.hidden = false;
+          feedback.textContent = `Nombre maximum d'équipes : ${MAX_TEAMS}. Au-delà, inscription sur liste d'attente.`;
+        }
+
+        if (typeof modal.showModal === 'function') {
+          modal.showModal();
+        } else {
+          modal.setAttribute('open', 'open');
+        }
+      }
+
+      function closeModal() {
+        if (typeof modal.close === 'function' && modal.open) {
+          modal.close();
+        } else {
+          modal.removeAttribute('open');
+        }
+      }
+
+      function setFeedback(message, isError = false) {
+        feedback.hidden = false;
+        feedback.textContent = message;
+        feedback.classList.toggle('error', isError);
+      }
+
+      form.addEventListener('submit', async event => {
+        event.preventDefault();
+        feedback.classList.remove('error');
+
+        const licence1 = document.getElementById('input-player1-licence').value.trim();
+        const licence2 = document.getElementById('input-player2-licence').value.trim();
+        const phone1 = document.getElementById('input-player1-phone').value.trim();
+
+        if (!LICENCE_REGEX.test(licence1) || !LICENCE_REGEX.test(licence2)) {
+          setFeedback('Merci de renseigner des licences valides.', true);
+          return;
+        }
+        if (licence1.toUpperCase() === licence2.toUpperCase()) {
+          setFeedback('Les deux licences doivent être différentes.', true);
+          return;
+        }
+        if (!phone1) {
+          setFeedback('Merci de renseigner un numéro de téléphone pour le joueur 1.', true);
+          return;
+        }
+
+        submitButton.disabled = true;
+        submitButton.textContent = 'Envoi en cours…';
+
+        const formData = new FormData(form);
+        const payload = Object.fromEntries(formData.entries());
+
+        try {
+          const response = await fetch('/register', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          const result = await response.json();
+          if (!response.ok || !result.ok) {
+            setFeedback(result.message || "Une erreur est survenue.", true);
+            submitButton.disabled = false;
+            submitButton.textContent = "Réessayer";
+            return;
+          }
+          setFeedback(result.message || 'Inscription enregistrée.');
+          submitButton.textContent = 'Envoyé !';
+          setTimeout(() => {
+            setFeedback(result.message || 'Inscription enregistrée.');
+            closeModal();
+          }, 1500);
+        } catch (error) {
+          console.error(error);
+          setFeedback("Impossible d'envoyer le formulaire.", true);
+          submitButton.disabled = false;
+          submitButton.textContent = "Réessayer";
+        }
+      });
+
+      closeButton.addEventListener('click', () => closeModal());
+      modal.addEventListener('cancel', event => {
+        event.preventDefault();
+        closeModal();
+      });
+
+      document.querySelectorAll('.filter-button').forEach(button => {
+        button.addEventListener('click', () => {
+          const sex = button.dataset.sex;
+          const isActive = button.classList.toggle('active');
+          button.setAttribute('aria-pressed', String(isActive));
+          if (isActive) {
+            state.filters.add(sex);
+          } else {
+            state.filters.delete(sex);
+          }
+          if (state.filters.size === 0) {
+            // Always keep at least one filter active
+            state.filters.add(sex);
+            button.classList.add('active');
+            button.setAttribute('aria-pressed', 'true');
+            return;
+          }
+          renderList();
+        });
+      });
+
+      document.querySelectorAll('.calendar-nav').forEach(button => {
+        button.addEventListener('click', () => {
+          const direction = button.dataset.direction === 'next' ? 1 : -1;
+          state.calendarDate.setMonth(state.calendarDate.getMonth() + direction);
+          renderCalendar();
+        });
+      });
+
+      loadTournaments();
+    </script>
+  </body>
+</html>

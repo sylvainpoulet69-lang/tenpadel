@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>Inscriptions – {{ club.label }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  </head>
+  <body class="club-view">
+    <header class="site-header">
+      <h1>Inscriptions – {{ club.label }}</h1>
+      <p class="subtitle">Vue réservée au club « {{ club.label }} ».</p>
+    </header>
+
+    <main class="club-main">
+      <section class="tournaments">
+        <div class="list-header">
+          <h2>Équipes inscrites</h2>
+          <a class="secondary" href="{{ url_for('club_registrations_csv', token=club.token) }}">Télécharger le CSV</a>
+        </div>
+        {% if registrations %}
+        <div class="table-wrapper">
+          <table class="registrations-table">
+            <thead>
+              <tr>
+                <th scope="col">Date</th>
+                <th scope="col">Tournoi</th>
+                <th scope="col">Catégorie</th>
+                <th scope="col">Sexe</th>
+                <th scope="col">Joueur 1</th>
+                <th scope="col">Joueur 2</th>
+                <th scope="col">Statut</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in registrations %}
+              <tr>
+                <td>{{ row.tournament_date or 'n/c' }}</td>
+                <td>
+                  <a href="{{ row.tournament_url }}" target="_blank" rel="noopener">
+                    {{ row.tournament_title }}
+                  </a>
+                </td>
+                <td>{{ row.category }}</td>
+                <td>{{ row.sex }}</td>
+                <td>
+                  <strong>{{ row.player1_name or row.player1_licence }}</strong><br />
+                  <small>Licence {{ row.player1_licence }}</small>
+                </td>
+                <td>
+                  <strong>{{ row.player2_name or row.player2_licence }}</strong><br />
+                  <small>Licence {{ row.player2_licence }}</small>
+                </td>
+                <td>{{ row.notes or 'Confirmé' }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p class="empty-state">Aucune inscription enregistrée pour le moment.</p>
+        {% endif %}
+      </section>
+    </main>
+  </body>
+</html>
