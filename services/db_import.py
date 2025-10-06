@@ -14,7 +14,8 @@ def ensure_schema():
     DB.parent.mkdir(exist_ok=True)
     con = sqlite3.connect(str(DB))
     cur = con.cursor()
-    cur.execute("""
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS tournaments(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT,
@@ -22,13 +23,19 @@ def ensure_schema():
             category TEXT,
             club_name TEXT,
             city TEXT,
-            start_date TEXT,
+            start_date TEXT,           -- ISO YYYY-MM-DD
             end_date TEXT,
             detail_url TEXT NOT NULL UNIQUE,
             registration_url TEXT
         );
-    """)
-    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_detail_url ON tournaments(detail_url);")
+        """
+    )
+    cur.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_detail_url ON tournaments(detail_url);"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_start_date ON tournaments(start_date);"
+    )
     con.commit()
     con.close()
 

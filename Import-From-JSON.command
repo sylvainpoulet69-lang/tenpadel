@@ -17,6 +17,8 @@ if not path.exists():
     sys.exit(1)
 
 content = path.read_text(encoding="utf-8").strip()
+size = path.stat().st_size
+print(f"📄 Lecture JSON: {path} ({size} octets)")
 if not content:
     tournaments = []
 else:
@@ -44,4 +46,6 @@ if not isinstance(tournaments, list):
 inserted = import_items([dict(item) for item in tournaments])
 print(f"✅ Import terminé — {inserted} nouvelles lignes ajoutées.")
 print(f"ℹ️ Total éléments lus dans le JSON : {len(tournaments)}")
+if len(tournaments) == 0:
+    print(f"⚠️ JSON vide lu depuis {path} — taille {size} octets.")
 PY

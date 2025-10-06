@@ -101,7 +101,8 @@ def main() -> None:
         context.close()
         browser.close()
 
-    print(f"✅ Total unique: {len(all_items)} — écrit: {OUT_JSON}")
+    size = OUT_JSON.stat().st_size if OUT_JSON.exists() else 0
+    print(f"✅ Total unique: {len(all_items)} — écrit: {OUT_JSON} ({size} octets)")
     print(f"🖼  Snapshot: {SNAPSHOT}")
 
 
