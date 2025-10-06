@@ -5,6 +5,7 @@ import atexit
 import csv
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import re
 import time
 from dataclasses import dataclass
@@ -83,6 +84,20 @@ class ClubToken:
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+
+# --- file logging (app + werkzeug)
+LOG_DIR = Path(__file__).resolve().parent / "data" / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+_handler = RotatingFileHandler(LOG_DIR / "app.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8")
+_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s"))
+
+app.logger.addHandler(_handler)
+app.logger.setLevel(logging.INFO)
+
+wz = logging.getLogger("werkzeug")
+wz.addHandler(_handler)
+wz.setLevel(logging.INFO)
 
 
 def load_config() -> Dict[str, object]:
