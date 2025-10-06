@@ -6,10 +6,9 @@ import re
 import sys
 import unicodedata
 from pathlib import Path
-from typing import Any
 
 from bs4 import BeautifulSoup
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import Page, sync_playwright
 
 OUTPUT_FILE = "data/tournaments.json"
 SNAPSHOT_FILE = "data/snapshot.html"
@@ -21,63 +20,63 @@ def _ensure_data_dir() -> Path:
     return data_dir
 
 
-def _extract_tournaments(html: str) -> list[dict]:
+DEFAULT_FFT_URL = "https://tenup.fft.fr/recherche/tournois"
+LEVEL_RE = re.compile(r"\bP(?:100|250|500|1000|1500|2000)\b", re.I)
+CAT_RE = re.compile(r"\b(?:DM|DX|SM|SD)\b", re.I)
+
+
+def extract_tournaments(html: str) -> list[dict]:
+    # lxml est plus robuste que html.parser
     soup = BeautifulSoup(html, "lxml")
 
-    category_pattern = re.compile(r"\b(?:DM|DX|SM|SD)\b", re.IGNORECASE)
-    level_pattern = re.compile(r"\bP(?:100|250|500|1000|1500|2000)\b", re.IGNORECASE)
+    # Conteneurs larges (PAS de :has / :has-text)
+    candidates = []
+    for sel in [
+        ".tenup-card",  # ancien markup TenUp
+        "div.card, div.card-event",  # cartes génériques
+        "[data-testid='event-card']",  # si présent
+        "article",  # fallback
+        "li",  # fallback très large
+    ]:
+        found = soup.select(sel)
+        if len(found) > len(candidates):
+            candidates = found
 
-    selectors = [
-        ".tenup-card",
-        "div.card",
-        "div.card-event",
-        '[data-testid="event-card"]',
-        "article",
-        "li",
-    ]
+    items, seen = [], set()
 
-    seen: set[int] = set()
-    cards: list[Any] = []
-    for selector in selectors:
-        for element in soup.select(selector):
-            if id(element) in seen:
-                continue
+    for c in candidates:
+        text = c.get_text(" ", strip=True)
 
-            text_content = element.get_text(" ", strip=True)
-            if not text_content:
-                continue
+        # Garder les éléments qui semblent être des tournois de Padel
+        if not (LEVEL_RE.search(text) or CAT_RE.search(text) or "padel" in text.lower()):
+            continue
 
-            if not level_pattern.search(text_content):
-                continue
-
-            if not category_pattern.search(text_content):
-                continue
-
-            seen.add(id(element))
-            cards.append(element)
-
-    tournaments: list[dict] = []
-    for card in cards:
-        def txt(selector: str) -> str:
-            el = card.select_one(selector)
+        def sel_txt(css):
+            el = c.select_one(css)
             return el.get_text(strip=True) if el else ""
 
         title = (
-            txt(".tenup-card__title")
-            or txt("h3, h4, h2")
-            or (card.get_text(" ", strip=True).split(" • ")[0] if card.get_text(strip=True) else "")
+            sel_txt(".tenup-card__title")
+            or sel_txt("h3, h4, h2")
+            or (text.split(" • ")[0] if text else "")
         )
-        date = txt(".tenup-card__date") or txt(".date") or txt("time") or ""
-        place = txt(".tenup-card__place") or txt(".location") or txt("p") or ""
-        level = txt(".tenup-card__category") or txt(".category") or ""
+        date = sel_txt(".tenup-card__date") or sel_txt(".date") or sel_txt("time")
+        place = sel_txt(".tenup-card__place") or sel_txt(".location") or sel_txt("p")
+
+        level = sel_txt(".tenup-card__category") or sel_txt(".category")
         if not level:
-            match = re.search(r"\bP(?:100|250|500|1000|1500|2000)\b", card.get_text(" ", strip=True))
-            level = match.group(0) if match else ""
+            m = LEVEL_RE.search(text)
+            level = m.group(0) if m else ""
 
-        anchor = card.select_one("a[href]")
-        url = anchor["href"] if anchor and anchor.has_attr("href") else ""
+        a = c.select_one("a[href]")
+        url = a["href"] if (a and a.has_attr("href")) else DEFAULT_FFT_URL  # ← URL par défaut
 
-        tournaments.append({
+        key = url or f"{title}|{date}"
+        if key in seen:
+            continue
+        seen.add(key)
+
+        items.append({
             "title": title,
             "date": date,
             "place": place,
@@ -85,7 +84,49 @@ def _extract_tournaments(html: str) -> list[dict]:
             "url": url,
         })
 
-    return tournaments
+    return items
+
+
+def go_next_page(page: Page) -> bool:
+    """
+    Essaie de cliquer sur 'Page suivante' via plusieurs sélecteurs.
+    Retourne True si une nouvelle page s'affiche, sinon False.
+    """
+    selectors = [
+        "button[aria-label='Page suivante']",
+        "a[aria-label='Page suivante']",
+        "button:has-text('Page suivante')",
+        "a:has-text('Page suivante')",
+        "button:has-text('Suivante')",
+        "a[rel='next']",
+        "nav[aria-label='Pagination'] a[rel='next']",
+    ]
+
+    before = page.content()
+
+    for sel in selectors:
+        loc = page.locator(sel)
+        try:
+            if loc.count() == 0:
+                continue
+            el = loc.first
+            el.wait_for(state="visible", timeout=2000)
+            if not el.is_enabled():
+                continue
+            el.scroll_into_view_if_needed()
+            el.click()
+            page.wait_for_timeout(800)
+            try:
+                page.wait_for_load_state("networkidle", timeout=4000)
+            except Exception:
+                pass
+            after = page.content()
+            if after != before:
+                return True
+        except Exception:
+            continue
+
+    return False
 
 
 def _slugify(value: str) -> str:
@@ -214,52 +255,42 @@ def manual_scrape(start_url: str = "https://tenup.fft.fr/recherche/tournois") ->
 
             input("👉 Appuie sur Entrée pour démarrer le scraping de la page courante… ")
 
-            all_items: list[dict] = []
-            seen_keys: set[str] = set()
+            snapshot_path = data_dir / Path(SNAPSHOT_FILE).name
+            all_tournaments: list[dict] = []
+            seen: set[str] = set()
+            page_index = 1
+            MAX_PAGES = 500  # garde-fou
 
             while True:
                 html = page.content()
-                snapshot_path = data_dir / Path(SNAPSHOT_FILE).name
                 with open(snapshot_path, "w", encoding="utf-8") as snap:
                     snap.write(html)
 
-                batch = _extract_tournaments(html)
+                batch = extract_tournaments(html)
 
-                for item in batch:
-                    key = item.get("url") or f"{item.get('title', '')}|{item.get('date', '')}"
-                    if key not in seen_keys:
-                        seen_keys.add(key)
-                        all_items.append(item)
+                for t in batch:
+                    key = t["url"] or f"{t['title']}|{t['date']}"
+                    if key not in seen:
+                        seen.add(key)
+                        all_tournaments.append(t)
 
-                next_candidates = [
-                    page.get_by_role("button", name="Page suivante"),
-                    page.locator('button[aria-label="Page suivante"]'),
-                    page.get_by_text("Page suivante"),
-                    page.locator("a[rel=next], button:has-text('Suivante'), a:has-text('Suivante')"),
-                ]
-                clicked = False
-                for locator in next_candidates:
-                    try:
-                        count = locator.count()
-                        if not count:
-                            continue
-                        target = locator.first if count > 1 else locator
-                        if target.is_enabled():
-                            target.click()
-                            time.sleep(2)
-                            clicked = True
-                            break
-                    except Exception:
-                        continue
+                print(f"➡️ Page {page_index}: {len(batch)} trouvés, total {len(all_tournaments)}")
 
-                if not clicked:
+                if page_index >= MAX_PAGES:
+                    print("⛔️ Arrêt sécurité: trop de pages.")
+                    break
+
+                if go_next_page(page):
+                    page_index += 1
+                    continue
+                else:
                     break
 
             output_path = data_dir / Path(OUTPUT_FILE).name
             with open(output_path, "w", encoding="utf-8") as handle:
-                json.dump(all_items, handle, ensure_ascii=False, indent=2)
+                json.dump(all_tournaments, handle, ensure_ascii=False, indent=2)
 
-            print(f"\n✅ Total unique: {len(all_items)} tournois")
+            print(f"\n✅ Total unique: {len(all_tournaments)} tournois")
             print(f"📁 Résultats : {output_path}")
             print(f"🧾 Snapshot : {snapshot_path}")
 
