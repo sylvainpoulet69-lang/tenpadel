@@ -1,10 +1,9 @@
 """Manual TenUp scraper where the user applies filters by hand."""
 from __future__ import annotations
 
-import json
+import json, time
 import re
 import sys
-import time
 import unicodedata
 from pathlib import Path
 from typing import Any
