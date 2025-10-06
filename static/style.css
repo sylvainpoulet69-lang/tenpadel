@@ -265,6 +265,13 @@ a.secondary:focus,
 
 .calendar-table td.has-tournament {
   background: #fff7d6;
+  cursor: pointer;
+}
+
+.calendar-table td.selected {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+  background: #ffe6a1;
 }
 
 .calendar-marker {

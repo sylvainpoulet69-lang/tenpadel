@@ -15,6 +15,57 @@ LOGGER = logging.getLogger(__name__)
 LOGGER.addHandler(logging.NullHandler())
 
 
+MONTH_MAP = {
+    "janvier": 1,
+    "janv": 1,
+    "février": 2,
+    "fevrier": 2,
+    "févr": 2,
+    "fevr": 2,
+    "mars": 3,
+    "avril": 4,
+    "avr": 4,
+    "mai": 5,
+    "juin": 6,
+    "juillet": 7,
+    "juil": 7,
+    "août": 8,
+    "aout": 8,
+    "septembre": 9,
+    "sept": 9,
+    "octobre": 10,
+    "oct": 10,
+    "novembre": 11,
+    "nov": 11,
+    "décembre": 12,
+    "decembre": 12,
+    "déc": 12,
+    "dec": 12,
+}
+
+RE_FR_DATE = re.compile(
+    r"(\d{1,2})\s+(janv\.?|janvier|févr\.?|fevr\.?|février|mars|avr\.?|avril|mai|juin|juil\.?|juillet|ao[uû]t|"
+    r"sept\.?|septembre|oct\.?|octobre|nov\.?|novembre|d[ée]c\.?|d[ée]cembre)\s+(\d{4})",
+    re.I,
+)
+
+
+def fr_to_iso(text: str):
+    if not text:
+        return None
+    normalised = text.lower().replace("\xa0", " ")
+    match = RE_FR_DATE.search(normalised)
+    if not match:
+        return None
+    day = int(match.group(1))
+    month_raw = match.group(2).replace(".", "")
+    year = int(match.group(3))
+    month = MONTH_MAP.get(month_raw)
+    if not month:
+        return None
+    return f"{year:04d}-{month:02d}-{day:02d}"
+
+
 RE_NUMERIC_DATE = re.compile(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})\b")
 RE_TEXTUAL_DATE = re.compile(r"\b(\d{1,2})(?:er)?\s+([a-zéû\.]+)\s+(\d{2,4})\b", re.I)
 MONTH_ALIASES = {
@@ -372,7 +423,7 @@ def extract_current_page_items(page: Page):
                 if len(parts) >= 2:
                     club = parts[-1]
 
-            start_date = _guess_start_date(ctx, title)
+            start_date = fr_to_iso(title) or fr_to_iso(ctx) or _guess_start_date(ctx, title)
 
             item = {
                 "name": title or "Tournoi",

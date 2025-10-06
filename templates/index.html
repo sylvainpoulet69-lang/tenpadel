@@ -209,10 +209,14 @@
       const STATUS_LABELS = { true: 'Inscriptions ouvertes', false: 'Inscriptions fermées' };
       const STATUS_CLASSES = { true: 'status-open', false: 'status-closed', unknown: 'status-unknown' };
 
+      const BY_DATE = new Map();
+
       const state = {
+        allTournaments: [],
         tournaments: [],
         filters: createDefaultFilters(),
         calendarDate: new Date(),
+        selectedDate: null,
         loading: false,
         error: null,
       };
@@ -238,7 +242,7 @@
         applyFiltersToForm();
         setupEventListeners();
         updateAdminVisibility();
-        loadTournaments();
+        loadTournaments({ forceAll: true });
       }
 
       function createDefaultFilters() {
@@ -338,6 +342,48 @@
         }
       }
 
+      function indexByDate(source = []) {
+        BY_DATE.clear();
+        for (const tournament of source) {
+          const dateStr = tournament.start_date;
+          if (!dateStr) {
+            continue;
+          }
+          if (!BY_DATE.has(dateStr)) {
+            BY_DATE.set(dateStr, []);
+          }
+          BY_DATE.get(dateStr).push(tournament);
+        }
+        for (const list of BY_DATE.values()) {
+          list.sort((a, b) => {
+            const catA = (a.category || '').localeCompare(b.category || '');
+            if (catA !== 0) {
+              return catA;
+            }
+            return (a.name || '').localeCompare(b.name || '');
+          });
+        }
+      }
+
+      function chooseInitialDate() {
+        const dates = Array.from(BY_DATE.keys()).sort();
+        if (dates.length === 0) {
+          return null;
+        }
+        const todayIso = new Date().toISOString().slice(0, 10);
+        const upcoming = dates.find(date => date >= todayIso);
+        return upcoming || dates[0];
+      }
+
+      function ensureSelectedDate() {
+        if (state.selectedDate && BY_DATE.has(state.selectedDate)) {
+          state.tournaments = BY_DATE.get(state.selectedDate) || [];
+          return;
+        }
+        state.selectedDate = chooseInitialDate();
+        state.tournaments = state.selectedDate ? BY_DATE.get(state.selectedDate) || [] : [];
+      }
+
       function updateFiltersFromForm() {
         state.filters.from = filterForm.elements.from.value;
         state.filters.to = filterForm.elements.to.value;
@@ -379,7 +425,11 @@
         const { forceAll = false } = options;
         state.loading = true;
         state.error = null;
-        renderList();
+        if (forceAll) {
+          state.selectedDate = null;
+        }
+        state.tournaments = [];
+        render();
         const params = forceAll ? new URLSearchParams() : buildQueryParams();
         const queryString = params.toString();
         const endpoint = queryString ? `/api/tournaments?${queryString}` : '/api/tournaments';
@@ -389,11 +439,19 @@
             throw new Error(`API error ${response.status}`);
           }
           const payload = await response.json();
-          state.tournaments = (payload.items || []).map(normaliseTournament);
+          const list = Array.isArray(payload) ? payload : payload.items || [];
+          const normalised = list.map(normaliseTournament);
+          window.ALL = normalised;
+          state.allTournaments = normalised;
+          indexByDate(normalised);
+          ensureSelectedDate();
         } catch (error) {
           console.error(error);
-          state.tournaments = [];
+          window.ALL = [];
+          state.allTournaments = [];
+          BY_DATE.clear();
           state.error = "Impossible de charger les tournois TenUp.";
+          state.selectedDate = null;
         } finally {
           state.loading = false;
           render();
@@ -455,13 +513,19 @@
             } else {
               cell.textContent = day;
               const isoDate = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-              if (state.tournaments.some(t => t.start_date === isoDate)) {
+              const hasEvents = BY_DATE.has(isoDate);
+              if (hasEvents) {
                 const marker = document.createElement('span');
                 marker.className = 'calendar-marker';
                 marker.title = 'Tournoi disponible';
                 cell.appendChild(marker);
                 cell.classList.add('has-tournament');
               }
+              if (state.selectedDate === isoDate) {
+                cell.classList.add('selected');
+              }
+              cell.dataset.date = isoDate;
+              cell.addEventListener('click', () => handleCalendarDayClick(isoDate));
             }
             row.appendChild(cell);
             day += 1;
@@ -471,6 +535,32 @@
             break;
           }
         }
+      }
+
+      function handleCalendarDayClick(dateStr) {
+        if (!dateStr) {
+          return;
+        }
+        state.selectedDate = dateStr;
+        state.tournaments = BY_DATE.get(dateStr) || [];
+        render();
+      }
+
+      function formatDateLabel(dateStr) {
+        if (!dateStr) {
+          return '';
+        }
+        const date = new Date(dateStr);
+        if (Number.isNaN(date.getTime())) {
+          return dateStr;
+        }
+        const formatted = date.toLocaleDateString('fr-FR', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+        });
+        return formatted.charAt(0).toUpperCase() + formatted.slice(1);
       }
 
       function renderList() {
@@ -490,22 +580,24 @@
           return;
         }
 
-        if (state.tournaments.length === 0) {
-          countLabel.textContent = '0 tournoi';
+        if (!state.selectedDate) {
+          countLabel.textContent = 'Sélectionnez un jour';
           emptyState.hidden = false;
-          emptyState.textContent = 'Aucun tournoi ne correspond aux filtres sélectionnés.';
+          emptyState.textContent = 'Choisissez une date dans le calendrier pour afficher les tournois.';
+          return;
+        }
+
+        if (state.tournaments.length === 0) {
+          countLabel.textContent = formatDateLabel(state.selectedDate);
+          emptyState.hidden = false;
+          emptyState.textContent = 'Aucun tournoi ce jour.';
           return;
         }
 
         emptyState.hidden = true;
-        const sorted = [...state.tournaments].sort((a, b) => {
-          if (a.start_date && b.start_date) {
-            return a.start_date.localeCompare(b.start_date);
-          }
-          return a.title.localeCompare(b.title);
-        });
+        const sorted = [...state.tournaments];
 
-        countLabel.textContent = `${sorted.length} ${sorted.length > 1 ? 'tournois' : 'tournoi'}`;
+        countLabel.textContent = `${sorted.length} ${sorted.length > 1 ? 'tournois' : 'tournoi'} — ${formatDateLabel(state.selectedDate)}`;
         const template = document.getElementById('tournament-card-template');
 
         sorted.forEach(tournament => {
