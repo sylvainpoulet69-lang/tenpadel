@@ -23,24 +23,13 @@ from extensions import db
 from services.scrape import scrape_tenup
 from services.tournament_store import TournamentStore
 from services.tournament_store_models import TournamentRecord
+from tenpadel.config_paths import DB_PATH, JSON_PATH, LOG_DIR, ROOT
 
-# >>> DB PATH PATCH >>>
 from pathlib import Path
 
-BASE_DIR = Path(__file__).parent.resolve()
-DATABASE_PATH = BASE_DIR / "data" / "app.db"
-SQLALCHEMY_DATABASE_URI = f"sqlite:///{DATABASE_PATH}"
-try:
-    app
-    app.config["SQLALCHEMY_DATABASE_URI"] = SQLALCHEMY_DATABASE_URI
-except NameError:
-    pass
-print(f"📁 Database path used: {DATABASE_PATH}")
-# <<< DB PATH PATCH <<<
-
-CONFIG_PATH = BASE_DIR / "config.json"
-TOURNAMENTS_PATH = BASE_DIR / "data" / "tournaments.json"
-REGISTRATIONS_PATH = BASE_DIR / "data" / "registrations.csv"
+CONFIG_PATH = ROOT / "config.json"
+TOURNAMENTS_PATH = JSON_PATH
+REGISTRATIONS_PATH = ROOT / "data" / "registrations.csv"
 TENUP_SCRAPE_JOB_ID = "tenup_scrape"
 CSV_HEADERS = [
     "timestamp",
@@ -85,8 +74,6 @@ class ClubToken:
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
-# --- file logging (app + werkzeug)
-LOG_DIR = Path(__file__).resolve().parent / "data" / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 _handler = RotatingFileHandler(LOG_DIR / "app.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8")
@@ -109,7 +96,7 @@ def load_config() -> Dict[str, object]:
 
 def ensure_core_directories() -> None:
     TOURNAMENTS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
 def ensure_registration_file() -> None:
@@ -151,6 +138,8 @@ CONFIG = load_config()
 TENUP_CONFIG = CONFIG.get("tenup", {})
 ADMIN_TOKEN = CONFIG.get("admin_token")
 
+SQLALCHEMY_DATABASE_URI = f"sqlite:///{DB_PATH}"
+
 app.config.update(
     SQLALCHEMY_DATABASE_URI=SQLALCHEMY_DATABASE_URI,
     SQLALCHEMY_TRACK_MODIFICATIONS=False,
@@ -159,6 +148,8 @@ app.config.update(
     ADMIN_TOKEN=ADMIN_TOKEN,
 )
 db.init_app(app)
+
+app.logger.info("Using database at %s", DB_PATH)
 
 log_path = Path(TENUP_CONFIG.get("log_path", "data/logs/tenup.log"))
 log_path.parent.mkdir(parents=True, exist_ok=True)

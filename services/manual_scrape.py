@@ -3,14 +3,20 @@ from __future__ import annotations
 
 import datetime
 import json
-from pathlib import Path
 
 # --- file logging (scrape)
 import logging
 from logging.handlers import RotatingFileHandler
 
-LOG_DIR = Path(__file__).resolve().parent.parent / "data" / "logs"
+from playwright.sync_api import sync_playwright
+
+from scrapers.tenup import extract_current_page_items, try_click_next
+from services.db_import import import_items
+from tenpadel.config_paths import DB_PATH, JSON_PATH, LOG_DIR, DATA
+
+DATA.mkdir(exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
+
 scrlog = logging.getLogger("scrape")
 if not scrlog.handlers:
     fh = RotatingFileHandler(LOG_DIR / "scrape.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8")
@@ -18,15 +24,7 @@ if not scrlog.handlers:
     scrlog.addHandler(fh)
     scrlog.setLevel(logging.INFO)
 
-from playwright.sync_api import sync_playwright
-
-from scrapers.tenup import extract_current_page_items, try_click_next
-from services.db_import import import_items
-
-BASE = Path(__file__).resolve().parent.parent
-DATA = BASE / "data"
-DATA.mkdir(exist_ok=True)
-OUT_JSON = DATA / "tournaments.json"
+OUT_JSON = JSON_PATH
 SNAPSHOT = DATA / "snapshot.html"
 
 SEARCH_URL = "https://tenup.fft.fr/recherche/tournois"
@@ -114,7 +112,7 @@ def main() -> None:
         SNAPSHOT.write_text(page.content(), encoding="utf-8")
 
         inserted = import_items(all_items)
-        print(f"🗃  Import DB: +{inserted} nouvelles lignes (idempotent)")
+        print(f"🗃  Import DB: +{inserted} nouvelles lignes → {DB_PATH}")
         print("✅ Fin du workflow: scrape → JSON/snapshot → DB (auto)")
 
         context.close()
