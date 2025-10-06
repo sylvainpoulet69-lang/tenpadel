@@ -112,8 +112,14 @@ def main() -> None:
         SNAPSHOT.write_text(page.content(), encoding="utf-8")
 
         print(f"🧮 Import: {len(all_items)} items -> {DB_PATH}")
-        rows_after = import_items(all_items)
-        print(f"🗃  DB rows now: {rows_after}  (fichier: {DB_PATH})")
+        stats = import_items(all_items)
+        print(
+            f"   ↳ Inserted: {stats.inserted}  Updated: {stats.updated}  Unchanged: {stats.skipped}"
+        )
+        if stats.reasons:
+            skipped_details = ", ".join(f"{k}={v}" for k, v in sorted(stats.reasons.items()))
+            print(f"   ↳ Ignored: {stats.total - stats.valid} ({skipped_details})")
+        print(f"🗃  DB rows now: {stats.rows_after}  (fichier: {DB_PATH})")
         print("✅ Fin du workflow: scrape → JSON/snapshot → DB (auto)")
 
         context.close()

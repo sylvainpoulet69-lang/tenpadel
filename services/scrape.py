@@ -5,12 +5,13 @@ import argparse
 import json
 import time
 from datetime import datetime
-from pathlib import Path
 from typing import Dict, List
 
 from playwright.sync_api import sync_playwright
 
 from scrapers.tenup import accept_cookies, navigate_to_results, select_discipline_padel
+from services.db_import import export_db_to_json, import_items
+from tenpadel.config_paths import JSON_PATH
 
 
 
@@ -133,84 +134,16 @@ def _extract_cards(page, limit=500, debug=False):
 
 
 def _save_results(items: List[Dict]) -> None:
-    from sqlalchemy import (
-        Column,
-        Integer,
-        MetaData,
-        String,
-        Table,
-        UniqueConstraint,
-        create_engine,
-        inspect,
-        insert,
-        select,
-        update,
+    JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
+    JSON_PATH.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    stats = import_items(items)
+    export_db_to_json()
+    print(
+        "Import:"
+        f" inserted={stats.inserted} updated={stats.updated} skipped={stats.skipped}"
+        f" db_rows={stats.rows_after}"
     )
-
-    base = Path(__file__).resolve().parent.parent
-    data_dir = base / "data"
-    data_dir.mkdir(parents=True, exist_ok=True)
-
-    with open(data_dir / "tournaments.json", "w", encoding="utf-8") as f:
-        json.dump(items, f, ensure_ascii=False, indent=2)
-
-    db_path = data_dir / "app.db"
-    eng = create_engine(f"sqlite:///{db_path}")
-    md = MetaData()
-    tournaments = Table(
-        "tournaments",
-        md,
-        Column("id", Integer, primary_key=True),
-        Column("tournament_id", String, nullable=False),
-        Column("name", String),
-        Column("level", String),
-        Column("category", String),
-        Column("club_name", String),
-        Column("city", String),
-        Column("start_date", String),
-        Column("end_date", String),
-        Column("detail_url", String, nullable=True),
-        Column("registration_url", String, nullable=True),
-        UniqueConstraint("tournament_id", name="uq_tournament_id"),
-    )
-    md.create_all(eng)
-
-    try:
-        inspector = inspect(eng)
-        columns = inspector.get_columns("tournaments")
-        needs_migration = any(
-            not next((col for col in columns if col["name"] == name), {"nullable": True})["nullable"]
-            for name in ("detail_url", "registration_url")
-        )
-        if needs_migration:
-            print("⚠️  Schéma SQLite existant détecté avec colonnes non nullables."
-                  " Supprimez data/app.db puis relancez : rm -f data/app.db")
-    except Exception:
-        pass
-
-    def _norm(value):
-        return value if value is not None else ""
-
-    with eng.begin() as conn:
-        for t in items:
-            payload = dict(t)
-            payload["detail_url"] = _norm(t.get("detail_url"))
-            payload["registration_url"] = _norm(t.get("registration_url"))
-
-            exists = conn.execute(
-                select(tournaments.c.id).where(
-                    tournaments.c.tournament_id == t["tournament_id"]
-                )
-            ).fetchone()
-
-            if exists:
-                conn.execute(
-                    update(tournaments)
-                    .where(tournaments.c.tournament_id == t["tournament_id"])
-                    .values(**payload)
-                )
-            else:
-                conn.execute(insert(tournaments).values(**payload))
 
 
 def scrape_all(
