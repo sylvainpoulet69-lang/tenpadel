@@ -5,6 +5,7 @@ import atexit
 import csv
 import json
 import logging
+import sqlite3
 from logging.handlers import RotatingFileHandler
 import re
 import time
@@ -150,6 +151,15 @@ app.config.update(
 db.init_app(app)
 
 app.logger.info("Using database at %s", DB_PATH)
+
+try:
+    con = sqlite3.connect(str(DB_PATH))
+    cur = con.cursor()
+    cur.execute("SELECT COUNT(*) FROM tournaments")
+    app.logger.info("DB boot count=%s", cur.fetchone()[0])
+    con.close()
+except Exception as e:  # pragma: no cover - best effort logging
+    app.logger.warning("DB boot count failed: %s", e)
 
 log_path = Path(TENUP_CONFIG.get("log_path", "data/logs/tenup.log"))
 log_path.parent.mkdir(parents=True, exist_ok=True)

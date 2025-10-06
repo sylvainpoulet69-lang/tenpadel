@@ -2,29 +2,47 @@
 from __future__ import annotations
 
 from flask import Blueprint, jsonify, request
-from sqlalchemy import asc, desc
+import sqlite3
 
-from services.tournament_store_models import TournamentRecord
+from tenpadel.config_paths import DB_PATH
 
-bp = Blueprint("tournaments_api", __name__, url_prefix="/api")
+bp = Blueprint("tournaments", __name__)
 
 
-@bp.route("/tournaments", methods=["GET"])
-def list_tournaments():
-    """Return all tournaments ordered by their start date."""
-
-    limit_raw = request.args.get("limit")
-    try:
-        limit = int(limit_raw) if limit_raw is not None else 1000
-    except (TypeError, ValueError):
-        limit = 1000
-    limit = max(1, min(limit, 5000))
-
-    query = TournamentRecord.query.order_by(
-        TournamentRecord.start_date.is_(None),
-        asc(TournamentRecord.start_date),
-        desc(TournamentRecord.id),
+def _fetch_all(limit: int = 1000):
+    con = sqlite3.connect(str(DB_PATH))
+    con.row_factory = sqlite3.Row
+    cur = con.cursor()
+    cur.execute(
+        """
+        SELECT id, name, category, level, club_name, city,
+               start_date, end_date, detail_url, registration_url
+        FROM tournaments
+        ORDER BY (start_date IS NULL), start_date ASC, id DESC
+        LIMIT ?
+    """,
+        (limit,),
     )
+    rows = [dict(r) for r in cur.fetchall()]
+    con.close()
+    for r in rows:
+        r["date"] = r.get("start_date")
+    return rows
 
-    rows = query.limit(limit).all()
-    return jsonify([row.to_dict() for row in rows])
+
+@bp.route("/api/tournaments")
+def list_tournaments():
+    limit = int(request.args.get("limit", 1000))
+    return jsonify(_fetch_all(limit))
+
+
+@bp.route("/api/_count")
+def count():
+    con = sqlite3.connect(str(DB_PATH))
+    cur = con.cursor()
+    cur.execute("SELECT COUNT(*) FROM tournaments")
+    total = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM tournaments WHERE COALESCE(start_date,'')!=''")
+    dated = cur.fetchone()[0]
+    con.close()
+    return jsonify({"db": str(DB_PATH), "total": total, "with_start_date": dated})
