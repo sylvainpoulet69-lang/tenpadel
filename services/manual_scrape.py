@@ -22,19 +22,39 @@ def _ensure_data_dir() -> Path:
 
 
 def _extract_tournaments(html: str) -> list[dict]:
-    soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(html, "lxml")
 
-    cards: list[Any] = []
-    for sel in [
+    category_pattern = re.compile(r"\b(?:DM|DX|SM|SD)\b", re.IGNORECASE)
+    level_pattern = re.compile(r"\bP(?:100|250|500|1000|1500|2000)\b", re.IGNORECASE)
+
+    selectors = [
         ".tenup-card",
-        "li:has(div:has-text('P'))",
-        "div.card, div.card-event",
+        "div.card",
+        "div.card-event",
+        '[data-testid="event-card"]',
         "article",
-        "div[data-testid='event-card']",
-    ]:
-        found = soup.select(sel)
-        if len(found) > len(cards):
-            cards = found
+        "li",
+    ]
+
+    seen: set[int] = set()
+    cards: list[Any] = []
+    for selector in selectors:
+        for element in soup.select(selector):
+            if id(element) in seen:
+                continue
+
+            text_content = element.get_text(" ", strip=True)
+            if not text_content:
+                continue
+
+            if not level_pattern.search(text_content):
+                continue
+
+            if not category_pattern.search(text_content):
+                continue
+
+            seen.add(id(element))
+            cards.append(element)
 
     tournaments: list[dict] = []
     for card in cards:
