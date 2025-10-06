@@ -1,18 +1,31 @@
-import sqlite3
-from pathlib import Path
-from typing import List, Dict
+"""Utilities to import scraped tournaments into the SQLite database."""
 
-BASE = Path(__file__).resolve().parent.parent
-DB    = BASE / "data" / "app.db"
+from __future__ import annotations
+
+import logging
+import sqlite3
+from typing import Dict, List
+
+from logging.handlers import RotatingFileHandler
+
+from tenpadel.config_paths import DB_PATH, LOG_DIR
 
 COLUMNS = [
     "name","level","category","club_name","city",
     "start_date","end_date","detail_url","registration_url"
 ]
 
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+log = logging.getLogger("db_import")
+if not log.handlers:
+    fh = RotatingFileHandler(LOG_DIR / "db_import.log", maxBytes=1_000_000, backupCount=2, encoding="utf-8")
+    fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    log.addHandler(fh)
+    log.setLevel(logging.INFO)
+
 def ensure_schema():
-    DB.parent.mkdir(exist_ok=True)
-    con = sqlite3.connect(str(DB))
+    DB_PATH.parent.mkdir(exist_ok=True)
+    con = sqlite3.connect(str(DB_PATH))
     cur = con.cursor()
     cur.execute(
         """
@@ -38,6 +51,7 @@ def ensure_schema():
     )
     con.commit()
     con.close()
+    log.info("Schema ensured at %s", DB_PATH)
 
 def _row(it: Dict):
     # alias + garde-fous
@@ -51,7 +65,7 @@ def _row(it: Dict):
 def import_items(items: List[Dict]) -> int:
     """INSERT OR IGNORE par detail_url (idempotent). Renvoie le nb de nouvelles lignes."""
     ensure_schema()
-    con = sqlite3.connect(str(DB))
+    con = sqlite3.connect(str(DB_PATH))
     cur = con.cursor()
     q = f"INSERT OR IGNORE INTO tournaments({','.join(COLUMNS)}) VALUES ({','.join(['?']*len(COLUMNS))})"
     ok = 0
@@ -63,4 +77,5 @@ def import_items(items: List[Dict]) -> int:
         ok += cur.rowcount
     con.commit()
     con.close()
+    log.info("Import finished: +%s new rows into %s", ok, DB_PATH)
     return ok
