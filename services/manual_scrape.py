@@ -111,8 +111,9 @@ def main() -> None:
         OUT_JSON.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         SNAPSHOT.write_text(page.content(), encoding="utf-8")
 
-        inserted = import_items(all_items)
-        print(f"🗃  Import DB: +{inserted} nouvelles lignes → {DB_PATH}")
+        print(f"🧮 Import: {len(all_items)} items -> {DB_PATH}")
+        rows_after = import_items(all_items)
+        print(f"🗃  DB rows now: {rows_after}  (fichier: {DB_PATH})")
         print("✅ Fin du workflow: scrape → JSON/snapshot → DB (auto)")
 
         context.close()
