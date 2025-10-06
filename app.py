@@ -20,10 +20,9 @@ from flask import (Flask, Response, abort, jsonify, render_template, request,
 from loguru import logger as loguru_logger
 
 from api.tournaments import bp as tournaments_bp
-from extensions import db
 from services.scrape import scrape_tenup
+from services.db_import import ensure_schema
 from services.tournament_store import TournamentStore
-from services.tournament_store_models import TournamentRecord
 from tenpadel.config_paths import DB_PATH, JSON_PATH, LOG_DIR, ROOT
 
 from pathlib import Path
@@ -135,21 +134,16 @@ def normalise_club(value: str) -> str:
 
 
 ensure_core_directories()
+ensure_schema()
 CONFIG = load_config()
 TENUP_CONFIG = CONFIG.get("tenup", {})
 ADMIN_TOKEN = CONFIG.get("admin_token")
 
-SQLALCHEMY_DATABASE_URI = f"sqlite:///{DB_PATH}"
-
 app.config.update(
-    SQLALCHEMY_DATABASE_URI=SQLALCHEMY_DATABASE_URI,
-    SQLALCHEMY_TRACK_MODIFICATIONS=False,
     JSON_SORT_KEYS=False,
     TENUP_CONFIG=TENUP_CONFIG,
     ADMIN_TOKEN=ADMIN_TOKEN,
 )
-db.init_app(app)
-
 app.logger.info("Using database at %s", DB_PATH)
 
 try:
@@ -165,10 +159,7 @@ log_path = Path(TENUP_CONFIG.get("log_path", "data/logs/tenup.log"))
 log_path.parent.mkdir(parents=True, exist_ok=True)
 loguru_logger.add(log_path, rotation="10 MB", retention=5, enqueue=True)
 
-with app.app_context():
-    db.create_all()
-
-TOURNAMENT_STORE = TournamentStore(db, TOURNAMENTS_PATH)
+TOURNAMENT_STORE = TournamentStore(None, TOURNAMENTS_PATH)
 app.register_blueprint(tournaments_bp)
 
 REGISTRATION_CONF = RegistrationConfig(

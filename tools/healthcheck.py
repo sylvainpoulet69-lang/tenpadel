@@ -1,13 +1,9 @@
 # tools/healthcheck.py
 import json, sqlite3, time, re, urllib.request, sys
-from pathlib import Path
 from datetime import datetime
 
-BASE = Path(__file__).resolve().parent.parent
-DATA = BASE / "data"
-DB   = DATA / "app.db"
-JSONF= DATA / "tournaments.json"
-LOGD = DATA / "logs"
+from tenpadel.config_paths import DB_PATH as DB, JSON_PATH as JSONF, LOG_DIR as LOGD
+
 API  = "http://127.0.0.1:5000/api/tournaments"
 
 def stamp(p: Path):
