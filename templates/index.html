@@ -27,11 +27,11 @@
           <div class="filter-row">
             <label>
               Du
-              <input type="date" name="from" required />
+              <input type="date" name="from" />
             </label>
             <label>
               Au
-              <input type="date" name="to" required />
+              <input type="date" name="to" />
             </label>
           </div>
           <div class="filter-row">
@@ -61,6 +61,7 @@
           <div class="filter-actions">
             <button type="submit" class="primary">Appliquer</button>
             <button type="reset" class="secondary">Réinitialiser</button>
+            <button type="button" class="secondary" id="show-all">Afficher tout</button>
           </div>
         </form>
       </section>
@@ -229,6 +230,7 @@
       const filterForm = document.getElementById('filter-form');
       const adminRefreshButton = document.getElementById('admin-refresh');
       const adminStatus = document.getElementById('admin-status');
+      const showAllButton = document.getElementById('show-all');
 
       init();
 
@@ -240,23 +242,15 @@
       }
 
       function createDefaultFilters() {
-        const today = new Date();
-        const future = new Date(today.getTime());
-        future.setDate(future.getDate() + 60);
         return {
           category: '',
-          from: formatDateInput(today),
-          to: formatDateInput(future),
-          region: TENUP_DEFAULTS.region || '',
-          city: TENUP_DEFAULTS.city || '',
-          radius: TENUP_DEFAULTS.radius_km ?? '',
+          from: '',
+          to: '',
+          region: '',
+          city: '',
+          radius: '',
           levels: new Set(),
         };
-      }
-
-      function formatDateInput(date) {
-        const tzOffset = date.getTimezoneOffset() * 60000;
-        return new Date(date.getTime() - tzOffset).toISOString().slice(0, 10);
       }
 
       function applyFiltersToForm() {
@@ -268,6 +262,12 @@
         const levelInputs = filterForm.querySelectorAll('input[name="level"]');
         levelInputs.forEach(input => {
           input.checked = state.filters.levels.has(input.value.toUpperCase());
+        });
+        document.querySelectorAll('.filter-button').forEach(button => {
+          const buttonCategory = button.dataset.category || '';
+          const isActive = buttonCategory === state.filters.category;
+          button.classList.toggle('active', isActive);
+          button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
         });
       }
 
@@ -293,8 +293,16 @@
           event.preventDefault();
           state.filters = createDefaultFilters();
           applyFiltersToForm();
-          loadTournaments();
+          loadTournaments({ forceAll: true });
         });
+
+        if (showAllButton) {
+          showAllButton.addEventListener('click', () => {
+            state.filters = createDefaultFilters();
+            applyFiltersToForm();
+            loadTournaments({ forceAll: true });
+          });
+        }
 
         filterForm.querySelectorAll('input[name="level"]').forEach(input => {
           input.addEventListener('change', () => {
@@ -364,18 +372,19 @@
           params.set('radius_km', state.filters.radius);
         }
         Array.from(state.filters.levels).forEach(level => params.append('level', level));
-        params.set('limit', TENUP_MAX_RESULTS);
-        params.set('sort', 'DATE_ASC');
         return params;
       }
 
-      async function loadTournaments() {
+      async function loadTournaments(options = {}) {
+        const { forceAll = false } = options;
         state.loading = true;
         state.error = null;
         renderList();
-        const params = buildQueryParams();
+        const params = forceAll ? new URLSearchParams() : buildQueryParams();
+        const queryString = params.toString();
+        const endpoint = queryString ? `/api/tournaments?${queryString}` : '/api/tournaments';
         try {
-          const response = await fetch(`/api/tournaments?${params.toString()}`);
+          const response = await fetch(endpoint);
           if (!response.ok) {
             throw new Error(`API error ${response.status}`);
           }
