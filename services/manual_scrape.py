@@ -8,6 +8,7 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 from scrapers.tenup import extract_current_page_items, try_click_next
+from services.db_import import import_items
 
 BASE = Path(__file__).resolve().parent.parent
 DATA = BASE / "data"
@@ -92,6 +93,10 @@ def main() -> None:
         }
         OUT_JSON.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         SNAPSHOT.write_text(page.content(), encoding="utf-8")
+
+        inserted = import_items(all_items)
+        print(f"🗃  Import DB: +{inserted} nouvelles lignes (idempotent)")
+        print("✅ Fin du workflow: scrape → JSON/snapshot → DB (auto)")
 
         context.close()
         browser.close()
