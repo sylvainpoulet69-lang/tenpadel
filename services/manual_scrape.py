@@ -1,42 +1,48 @@
 """Manual TenUp scraper where the user applies filters by hand."""
 from __future__ import annotations
 
-import json, time
+import json
+import time
+import os
 import re
 import sys
 import unicodedata
 from pathlib import Path
 
 from bs4 import BeautifulSoup
-from playwright.sync_api import Page, sync_playwright
+from playwright.sync_api import sync_playwright, Page
 
 OUTPUT_FILE = "data/tournaments.json"
 SNAPSHOT_FILE = "data/snapshot.html"
 
-
-def _ensure_data_dir() -> Path:
-    data_dir = Path("data")
-    data_dir.mkdir(parents=True, exist_ok=True)
-    return data_dir
-
-
 DEFAULT_FFT_URL = "https://tenup.fft.fr/recherche/tournois"
+
+# Catégories & niveaux attendus
+CAT_RE = re.compile(r"\b(?:DM|DX|DD|SM|SD)\b", re.I)
 LEVEL_RE = re.compile(r"\bP(?:100|250|500|1000|1500|2000)\b", re.I)
-CAT_RE = re.compile(r"\b(?:DM|DX|SM|SD)\b", re.I)
+
+# Dates françaises compactes « 21 nov. 2025 » / « 7 févr. 2026 » / « 30 nov 2025 »
+DATE_RE = re.compile(
+    r"\b(\d{1,2})\s*(janv\.|févr\.|mars|avr\.|mai|juin|juil\.|août|sept\.|oct\.|nov\.|déc\.)\s*(\d{4})\b",
+    re.I,
+)
+
+
+def _ensure_data_dir():
+    Path("data").mkdir(parents=True, exist_ok=True)
 
 
 def extract_tournaments(html: str) -> list[dict]:
-    # lxml est plus robuste que html.parser
     soup = BeautifulSoup(html, "lxml")
 
-    # Conteneurs larges (PAS de :has / :has-text)
+    # Conteneurs « larges » — PAS de :has / :has-text
     candidates = []
     for sel in [
-        ".tenup-card",  # ancien markup TenUp
-        "div.card, div.card-event",  # cartes génériques
-        "[data-testid='event-card']",  # si présent
-        "article",  # fallback
-        "li",  # fallback très large
+        ".tenup-card",                    # ancien markup
+        "div.card, div.card-event",       # cartes génériques
+        "[data-testid='event-card']",
+        "article",
+        "li",
     ]:
         found = soup.select(sel)
         if len(found) > len(candidates):
@@ -47,7 +53,7 @@ def extract_tournaments(html: str) -> list[dict]:
     for c in candidates:
         text = c.get_text(" ", strip=True)
 
-        # Garder les éléments qui semblent être des tournois de Padel
+        # Si on ne voit aucun indice Padel, on ignore (mais reste permissif)
         if not (LEVEL_RE.search(text) or CAT_RE.search(text) or "padel" in text.lower()):
             continue
 
@@ -55,33 +61,73 @@ def extract_tournaments(html: str) -> list[dict]:
             el = c.select_one(css)
             return el.get_text(strip=True) if el else ""
 
+        # Titre (gros texte à gauche)
         title = (
             sel_txt(".tenup-card__title")
             or sel_txt("h3, h4, h2")
             or (text.split(" • ")[0] if text else "")
         )
-        date = sel_txt(".tenup-card__date") or sel_txt(".date") or sel_txt("time")
-        place = sel_txt(".tenup-card__place") or sel_txt(".location") or sel_txt("p")
 
-        level = sel_txt(".tenup-card__category") or sel_txt(".category")
+        # Lieu (ligne avec l’icône localisation)
+        place = (
+            sel_txt(".tenup-card__place")
+            or sel_txt(".location")
+            or sel_txt("p")
+        )
+
+        # Catégorie : pilule type DM / DX / DD / SM / SD
+        # On cherche d’abord des éléments typés, sinon on retombe sur le texte global
+        category = (
+            sel_txt(".tenup-card__category")
+            or sel_txt(".category")
+        )
+        if not category:
+            m = CAT_RE.search(text)
+            category = m.group(0).upper() if m else "Inconnue"
+
+        # Niveaux (P100 / P250 / etc.) — facultatif mais utile
+        level = (
+            sel_txt(".tenup-card__level")
+            or sel_txt(".level")
+        )
         if not level:
             m = LEVEL_RE.search(text)
-            level = m.group(0) if m else ""
+            level = m.group(0).upper() if m else ""
 
+        # Dates : on tente d’extraire deux occurrences (début / fin) dans le bloc de droite
+        # On cherche dans la carte elle-même d'abord
+        dates_text = (
+            sel_txt(".tenup-card__date")
+            or sel_txt(".date")
+            or text
+        )
+        date_matches = DATE_RE.findall(dates_text)
+        start_date = end_date = ""
+        if len(date_matches) >= 1:
+            d, m, y = date_matches[0]
+            start_date = f"{d} {m} {y}"
+        if len(date_matches) >= 2:
+            d, m, y = date_matches[1]
+            end_date = f"{d} {m} {y}"
+
+        # Lien
         a = c.select_one("a[href]")
-        url = a["href"] if (a and a.has_attr("href")) else DEFAULT_FFT_URL  # ← URL par défaut
+        url = a["href"] if (a and a.has_attr("href")) else DEFAULT_FFT_URL
 
-        key = url or f"{title}|{date}"
+        # Unicité
+        key = url or f"{title}|{start_date}|{end_date}"
         if key in seen:
             continue
         seen.add(key)
 
         items.append({
-            "title": title,
-            "date": date,
-            "place": place,
-            "level": level,
-            "url": url,
+            "title":      title or "Tournoi sans titre",
+            "place":      place or "Lieu inconnu",
+            "category":   category or "Inconnue",
+            "level":      level or "Niveau non précisé",
+            "start_date": start_date or "Date inconnue",
+            "end_date":   end_date or "Date inconnue",
+            "url":        url,
         })
 
     return items
@@ -129,6 +175,19 @@ def go_next_page(page: Page) -> bool:
     return False
 
 
+def sanitize_tournament(t: dict) -> dict:
+    # Valeurs par défaut si vides
+    return {
+        "title":      (t.get("title") or "Tournoi sans titre").strip(),
+        "place":      (t.get("place") or "Lieu inconnu").strip(),
+        "category":   (t.get("category") or "Inconnue").strip(),
+        "level":      (t.get("level") or "Niveau non précisé").strip(),
+        "start_date": (t.get("start_date") or "Date inconnue").strip(),
+        "end_date":   (t.get("end_date") or "Date inconnue").strip(),
+        "url":        (t.get("url") or DEFAULT_FFT_URL).strip(),
+    }
+
+
 def _slugify(value: str) -> str:
     if not value:
         return ""
@@ -163,8 +222,8 @@ def _upsert_database(items: list[dict]) -> None:
         update,
     )
 
-    data_dir = _ensure_data_dir()
-    db_path = data_dir / "app.db"
+    _ensure_data_dir()
+    db_path = Path("data") / "app.db"
     engine = create_engine(f"sqlite:///{db_path}")
     metadata = MetaData()
     tournaments = Table(
@@ -209,18 +268,20 @@ def _upsert_database(items: list[dict]) -> None:
 
     with engine.begin() as conn:
         for item in items:
-            slug_source = item.get("url") or f"{item.get('title', '')}-{item.get('date', '')}"
-            tournament_id = _slugify(slug_source) or _slugify(f"{item.get('title', '')}-{item.get('date', '')}-{time.time()}")
+            slug_source = item.get("url") or f"{item.get('title', '')}-{item.get('start_date', '')}-{item.get('end_date', '')}"
+            tournament_id = _slugify(slug_source) or _slugify(
+                f"{item.get('title', '')}-{item.get('start_date', '')}-{item.get('end_date', '')}-{time.time()}"
+            )
             club, city = _split_place(item.get("place", ""))
             payload = {
                 "tournament_id": tournament_id,
                 "name": _normalize(item.get("title")),
                 "level": _normalize(item.get("level")),
-                "category": None,
+                "category": _normalize(item.get("category")),
                 "club_name": _normalize(club),
                 "city": _normalize(city),
-                "start_date": None,
-                "end_date": None,
+                "start_date": _normalize(item.get("start_date")),
+                "end_date": _normalize(item.get("end_date")),
                 "detail_url": _normalize(item.get("url")),
                 "registration_url": None,
             }
@@ -240,7 +301,7 @@ def _upsert_database(items: list[dict]) -> None:
 
 
 def manual_scrape(start_url: str = "https://tenup.fft.fr/recherche/tournois") -> None:
-    data_dir = _ensure_data_dir()
+    _ensure_data_dir()
     print("\n=== SCRAPER LES TOURNOIS PADEL (mode manuel) ===")
     print("1) Une fenêtre Chromium va s’ouvrir.")
     print("2) Connecte-toi si besoin, applique TES FILTRES (PADEL uniquement).")
@@ -255,7 +316,6 @@ def manual_scrape(start_url: str = "https://tenup.fft.fr/recherche/tournois") ->
 
             input("👉 Appuie sur Entrée pour démarrer le scraping de la page courante… ")
 
-            snapshot_path = data_dir / Path(SNAPSHOT_FILE).name
             all_tournaments: list[dict] = []
             seen: set[str] = set()
             page_index = 1
@@ -263,13 +323,11 @@ def manual_scrape(start_url: str = "https://tenup.fft.fr/recherche/tournois") ->
 
             while True:
                 html = page.content()
-                with open(snapshot_path, "w", encoding="utf-8") as snap:
-                    snap.write(html)
-
                 batch = extract_tournaments(html)
 
                 for t in batch:
-                    key = t["url"] or f"{t['title']}|{t['date']}"
+                    t = sanitize_tournament(t)
+                    key = t["url"] or f"{t['title']}|{t['start_date']}|{t['end_date']}"
                     if key not in seen:
                         seen.add(key)
                         all_tournaments.append(t)
@@ -286,19 +344,25 @@ def manual_scrape(start_url: str = "https://tenup.fft.fr/recherche/tournois") ->
                 else:
                     break
 
-            output_path = data_dir / Path(OUTPUT_FILE).name
-            with open(output_path, "w", encoding="utf-8") as handle:
+            with open("data/tournaments.json", "w", encoding="utf-8") as handle:
                 json.dump(all_tournaments, handle, ensure_ascii=False, indent=2)
 
+            with open("data/snapshot.html", "w", encoding="utf-8") as snap:
+                snap.write(page.content())
+
             print(f"\n✅ Total unique: {len(all_tournaments)} tournois")
-            print(f"📁 Résultats : {output_path}")
-            print(f"🧾 Snapshot : {snapshot_path}")
+            print("📁 Résultats : data/tournaments.json")
+            print("🧾 Snapshot : data/snapshot.html")
+
+            if os.path.exists("data/app.db"):
+                print("⚠️ La base SQLite existe déjà. Si une erreur NOT NULL persiste, supprimez-la :")
+                print("   rm -f data/app.db  (elle sera régénérée ensuite)")
 
         finally:
             browser.close()
 
     try:
-        with open(data_dir / Path(OUTPUT_FILE).name, "r", encoding="utf-8") as handle:
+        with open(Path(OUTPUT_FILE), "r", encoding="utf-8") as handle:
             payload = json.load(handle)
         if payload:
             _upsert_database(payload)
