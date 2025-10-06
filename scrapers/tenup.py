@@ -245,4 +245,102 @@ __all__ = [
     "select_discipline_padel",
     "navigate_to_results",
     "_scroll_to_load",
+    "extract_current_page_items",
+    "try_click_next",
 ]
+
+RE_CAT = re.compile(r"\bP(?:25|50|100|250|500|1000|2000)\b", re.I)
+
+
+def _closest_text(page: Page, handle):
+    try:
+        return page.evaluate("(el)=> (el.closest('article,div,li')||el).innerText", handle)
+    except Exception:
+        return ""
+
+
+def extract_current_page_items(page: Page):
+    anchors = page.locator("a[href*='/tournoi/']")
+    n = anchors.count()
+    items = []
+    for i in range(n):
+        try:
+            a = anchors.nth(i)
+            href = a.get_attribute("href") or ""
+            if not href:
+                continue
+            if href.startswith("/"):
+                href = "https://tenup.fft.fr" + href
+
+            title = (a.inner_text() or "").strip()
+            ctx = _closest_text(page, a.element_handle()) or ""
+            ctx = ctx.replace("\xa0", " ").strip()
+
+            mcat = RE_CAT.search(title) or RE_CAT.search(ctx)
+            category = mcat.group(0).upper() if mcat else None
+
+            club = None
+            if " - " in title:
+                parts = [p.strip() for p in title.split(" - ") if p.strip()]
+                if len(parts) >= 2:
+                    club = parts[-1]
+
+            item = {
+                "name": title or "Tournoi",
+                "level": None,
+                "category": category,
+                "club_name": club,
+                "city": None,
+                "start_date": None,
+                "end_date": None,
+                "detail_url": href,
+                "registration_url": None,
+                "title": title,
+                "url": href,
+                "sex": None,
+            }
+            items.append(item)
+        except Exception:
+            continue
+
+    seen, out = set(), []
+    for it in items:
+        u = it.get("detail_url")
+        if not u or u in seen:
+            continue
+        seen.add(u)
+        out.append(it)
+    return out
+
+
+def try_click_next(page: Page):
+    try:
+        page.evaluate("window.scrollBy(0, 800)")
+        page.wait_for_timeout(200)
+    except Exception:
+        pass
+
+    for role, name in [
+        ("button", r"(Suivant|Page suivante|Next|>|\u203A)"),
+        ("link", r"(Suivant|Page suivante|Next|>|\u203A)"),
+    ]:
+        try:
+            el = page.get_by_role(role, name=re.compile(name, re.I))
+            if el.count() and el.first.is_enabled():
+                el.first.click()
+                page.wait_for_load_state('domcontentloaded', timeout=30000)
+                return True
+        except Exception:
+            pass
+
+    for css in ["a[rel='next']", "button[aria-label*='suivant' i]"]:
+        try:
+            el = page.locator(css)
+            if el.count() and el.first.is_enabled():
+                el.first.click()
+                page.wait_for_load_state('domcontentloaded', timeout=30000)
+                return True
+        except Exception:
+            pass
+
+    return False
