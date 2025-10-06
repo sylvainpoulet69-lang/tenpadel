@@ -263,7 +263,7 @@ a.secondary:focus,
   background: #f2f4f8;
 }
 
-.calendar-table td.has-tournament {
+.calendar-table td.has-event {
   background: #fff7d6;
   cursor: pointer;
 }
@@ -274,15 +274,15 @@ a.secondary:focus,
   background: #ffe6a1;
 }
 
-.calendar-marker {
+.calendar-table td .dot {
   position: absolute;
-  bottom: 6px;
   left: 50%;
+  bottom: 6px;
   transform: translateX(-50%);
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: var(--warning);
+  background: #f3c22b;
 }
 
 .calendar-legend {
@@ -314,6 +314,48 @@ a.secondary:focus,
   margin: 0 0 1rem;
   color: var(--muted);
   font-size: 0.9rem;
+}
+
+.day-list {
+  display: grid;
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+
+.tour-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  background: #fdfdfd;
+}
+
+.tour-item .t-title {
+  font-weight: 600;
+  flex: 1;
+}
+
+.tour-item .t-meta {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.tour-item .t-cta {
+  border-radius: 999px;
+  padding: 0.45rem 1rem;
+  font-weight: 600;
+  background: var(--accent);
+  color: #fff;
+  text-decoration: none;
+  transition: background 0.2s ease;
+}
+
+.tour-item .t-cta:hover,
+.tour-item .t-cta:focus {
+  background: #1b3be0;
 }
 
 .tournament-list {

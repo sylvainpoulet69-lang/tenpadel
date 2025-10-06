@@ -62,6 +62,7 @@ class TournamentRecord(db.Model):
             "region": self.region,
             "start_date": self.start_date,
             "end_date": self.end_date,
+            "date": self.start_date,
             "registration_deadline": self.registration_deadline,
             "surface": self.surface,
             "indoor_outdoor": self.indoor_outdoor,

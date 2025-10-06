@@ -98,6 +98,7 @@
           </div>
         </div>
         <p id="admin-status" class="admin-status muted" hidden></p>
+        <div id="day-list" class="day-list" aria-live="polite"></div>
         <div id="tournament-list" class="tournament-list" aria-live="polite"></div>
         <p id="empty-state" class="empty-state" hidden>Aucun tournoi ne correspond aux filtres sélectionnés.</p>
       </section>
@@ -209,6 +210,7 @@
       const STATUS_LABELS = { true: 'Inscriptions ouvertes', false: 'Inscriptions fermées' };
       const STATUS_CLASSES = { true: 'status-open', false: 'status-closed', unknown: 'status-unknown' };
 
+      let ALL = [];
       const BY_DATE = new Map();
 
       const state = {
@@ -222,6 +224,7 @@
       };
 
       const listContainer = document.getElementById('tournament-list');
+      const dayListContainer = document.getElementById('day-list');
       const countLabel = document.getElementById('tournament-count');
       const emptyState = document.getElementById('empty-state');
       const calendarBody = document.getElementById('calendar-body');
@@ -345,7 +348,7 @@
       function indexByDate(source = []) {
         BY_DATE.clear();
         for (const tournament of source) {
-          const dateStr = tournament.start_date;
+          const dateStr = tournament.start_date || tournament.date || '';
           if (!dateStr) {
             continue;
           }
@@ -397,28 +400,53 @@
         state.filters.levels = selectedLevels;
       }
 
-      function buildQueryParams() {
-        const params = new URLSearchParams();
-        if (state.filters.category) {
-          params.set('category', state.filters.category);
+      function applyFilters(source, filters) {
+        if (!filters) {
+          return [...source];
         }
-        if (state.filters.from) {
-          params.set('from', state.filters.from);
-        }
-        if (state.filters.to) {
-          params.set('to', state.filters.to);
-        }
-        if (state.filters.region) {
-          params.set('region', state.filters.region);
-        }
-        if (state.filters.city) {
-          params.set('city', state.filters.city);
-        }
-        if (state.filters.radius) {
-          params.set('radius_km', state.filters.radius);
-        }
-        Array.from(state.filters.levels).forEach(level => params.append('level', level));
-        return params;
+        const wantedCategory = filters.category ? filters.category.toUpperCase() : '';
+        const levels = filters.levels instanceof Set ? filters.levels : new Set();
+        const fromDate = filters.from || '';
+        const toDate = filters.to || '';
+        const regionFilter = filters.region ? filters.region.toUpperCase() : '';
+        const cityFilter = filters.city ? filters.city.toLowerCase() : '';
+
+        return source.filter(tournament => {
+          if (wantedCategory && tournament.category !== wantedCategory) {
+            return false;
+          }
+
+          if (levels.size) {
+            const level = (tournament.level || '').toUpperCase();
+            if (!level || !levels.has(level)) {
+              return false;
+            }
+          }
+
+          const startDate = tournament.start_date || tournament.date || '';
+          if (fromDate && startDate && startDate < fromDate) {
+            return false;
+          }
+          if (toDate && startDate && startDate > toDate) {
+            return false;
+          }
+
+          if (regionFilter) {
+            const region = (tournament.region || '').toUpperCase();
+            if (region && region !== regionFilter) {
+              return false;
+            }
+          }
+
+          if (cityFilter) {
+            const city = (tournament.city || '').toLowerCase();
+            if (city && !city.includes(cityFilter)) {
+              return false;
+            }
+          }
+
+          return true;
+        });
       }
 
       async function loadTournaments(options = {}) {
@@ -430,24 +458,28 @@
         }
         state.tournaments = [];
         render();
-        const params = forceAll ? new URLSearchParams() : buildQueryParams();
-        const queryString = params.toString();
-        const endpoint = queryString ? `/api/tournaments?${queryString}` : '/api/tournaments';
+
         try {
-          const response = await fetch(endpoint);
-          if (!response.ok) {
-            throw new Error(`API error ${response.status}`);
+          if (forceAll || ALL.length === 0) {
+            const response = await fetch('/api/tournaments');
+            if (!response.ok) {
+              throw new Error(`API error ${response.status}`);
+            }
+            const payload = await response.json();
+            const list = Array.isArray(payload) ? payload : payload.items || [];
+            const normalised = list.map(normaliseTournament);
+            ALL = normalised;
+            window.ALL = normalised;
           }
-          const payload = await response.json();
-          const list = Array.isArray(payload) ? payload : payload.items || [];
-          const normalised = list.map(normaliseTournament);
-          window.ALL = normalised;
-          state.allTournaments = normalised;
-          indexByDate(normalised);
+
+          const workingList = forceAll ? ALL : applyFilters(ALL, state.filters);
+          state.allTournaments = workingList;
+          indexByDate(workingList);
           ensureSelectedDate();
         } catch (error) {
           console.error(error);
           window.ALL = [];
+          ALL = [];
           state.allTournaments = [];
           BY_DATE.clear();
           state.error = "Impossible de charger les tournois TenUp.";
@@ -491,6 +523,7 @@
       function render() {
         renderCalendar();
         renderList();
+        renderDay(state.selectedDate);
       }
 
       function renderCalendar() {
@@ -513,19 +546,11 @@
             } else {
               cell.textContent = day;
               const isoDate = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-              const hasEvents = BY_DATE.has(isoDate);
-              if (hasEvents) {
-                const marker = document.createElement('span');
-                marker.className = 'calendar-marker';
-                marker.title = 'Tournoi disponible';
-                cell.appendChild(marker);
-                cell.classList.add('has-tournament');
-              }
               if (state.selectedDate === isoDate) {
                 cell.classList.add('selected');
               }
               cell.dataset.date = isoDate;
-              cell.addEventListener('click', () => handleCalendarDayClick(isoDate));
+              cell.addEventListener('click', () => onCalendarDayClick(isoDate));
             }
             row.appendChild(cell);
             day += 1;
@@ -535,9 +560,35 @@
             break;
           }
         }
+        renderCalendarMarkers();
       }
 
-      function handleCalendarDayClick(dateStr) {
+      function renderCalendarMarkers() {
+        const cells = calendarBody.querySelectorAll('td');
+        cells.forEach(cell => {
+          cell.classList.remove('has-event');
+          const existing = cell.querySelector('.dot');
+          if (existing) {
+            existing.remove();
+          }
+        });
+
+        for (const [date] of BY_DATE.entries()) {
+          const cell = calendarBody.querySelector(`[data-date="${date}"]`);
+          if (!cell || cell.classList.contains('empty')) {
+            continue;
+          }
+          if (!cell.querySelector('.dot')) {
+            const dot = document.createElement('span');
+            dot.className = 'dot';
+            dot.title = 'Tournoi disponible';
+            cell.appendChild(dot);
+          }
+          cell.classList.add('has-event');
+        }
+      }
+
+      function onCalendarDayClick(dateStr) {
         if (!dateStr) {
           return;
         }
@@ -561,6 +612,44 @@
           day: 'numeric',
         });
         return formatted.charAt(0).toUpperCase() + formatted.slice(1);
+      }
+
+      function renderDay(dateStr) {
+        if (!dayListContainer) {
+          return;
+        }
+        if (state.loading) {
+          dayListContainer.innerHTML = '<p>Chargement…</p>';
+          return;
+        }
+        if (state.error) {
+          dayListContainer.innerHTML = `<p>${state.error}</p>`;
+          return;
+        }
+        if (!dateStr) {
+          dayListContainer.innerHTML = '<p>Sélectionnez un jour dans le calendrier.</p>';
+          return;
+        }
+        const list = BY_DATE.get(dateStr) || [];
+        if (!list.length) {
+          dayListContainer.innerHTML = '<p>Aucun tournoi ce jour.</p>';
+          return;
+        }
+        dayListContainer.innerHTML = list
+          .map(tournament => {
+            const name = tournament.name || tournament.title || 'Tournoi';
+            const categoryKey = tournament.category || '';
+            const category = CATEGORY_LABELS[categoryKey] || categoryKey;
+            const url = tournament.detail_url || tournament.details_url || tournament.registration_url || '#';
+            return `
+              <div class="tour-item">
+                <div class="t-title">${name}</div>
+                <div class="t-meta">${category}</div>
+                <a class="t-cta" href="${url}" target="_blank" rel="noopener">S’inscrire</a>
+              </div>
+            `;
+          })
+          .join('');
       }
 
       function renderList() {
