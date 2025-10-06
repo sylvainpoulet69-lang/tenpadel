@@ -5,6 +5,19 @@ import datetime
 import json
 from pathlib import Path
 
+# --- file logging (scrape)
+import logging
+from logging.handlers import RotatingFileHandler
+
+LOG_DIR = Path(__file__).resolve().parent.parent / "data" / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+scrlog = logging.getLogger("scrape")
+if not scrlog.handlers:
+    fh = RotatingFileHandler(LOG_DIR / "scrape.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8")
+    fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    scrlog.addHandler(fh)
+    scrlog.setLevel(logging.INFO)
+
 from playwright.sync_api import sync_playwright
 
 from scrapers.tenup import extract_current_page_items, try_click_next
@@ -41,6 +54,8 @@ def main() -> None:
     print("2) Connecte-toi si besoin, applique TES FILTRES (PADEL uniquement).")
     print("3) Quand la page de résultats est visible et filtrée, reviens ici et appuie sur Entrée.")
 
+    scrlog.info("manual scrape: start")
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False, slow_mo=100)
         context = browser.new_context()
@@ -53,18 +68,21 @@ def main() -> None:
         seen: set[str] = set()
 
         # Page 1
+        page_idx = 1
         cur = [normalize_item(x) for x in extract_current_page_items(page)]
         cur_valid = [x for x in cur if is_valid(x)]
+        added = 0
         for it in cur_valid:
             u = it["detail_url"]
             if u in seen:
                 continue
             seen.add(u)
             all_items.append(it)
-        print(f">> Page 1 : +{len(cur_valid)} (total {len(all_items)})")
+            added += 1
+        scrlog.info("page %s: +%s (total %s)", page_idx, added, len(all_items))
+        print(f">> Page {page_idx} : +{added} (total {len(all_items)})")
 
         # Pagination
-        page_idx = 1
         while True:
             ok = try_click_next(page)
             if not ok:
@@ -81,6 +99,7 @@ def main() -> None:
                 seen.add(u)
                 all_items.append(it)
                 added += 1
+            scrlog.info("page %s: +%s (total %s)", page_idx, added, len(all_items))
             print(f">> Page {page_idx} : +{added} (total {len(all_items)})")
             if page_idx > 50:
                 print("Stop pagination (sécurité)")
@@ -104,6 +123,7 @@ def main() -> None:
     size = OUT_JSON.stat().st_size if OUT_JSON.exists() else 0
     print(f"✅ Total unique: {len(all_items)} — écrit: {OUT_JSON} ({size} octets)")
     print(f"🖼  Snapshot: {SNAPSHOT}")
+    scrlog.info("manual scrape: total=%s", len(all_items))
 
 
 if __name__ == "__main__":
