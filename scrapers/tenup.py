@@ -5,12 +5,47 @@ import logging
 import random
 import re
 import time
+import unicodedata
+from datetime import date
 from typing import Callable, Iterable
 
 from playwright.sync_api import Locator, Page
 
 LOGGER = logging.getLogger(__name__)
 LOGGER.addHandler(logging.NullHandler())
+
+
+RE_NUMERIC_DATE = re.compile(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})\b")
+RE_TEXTUAL_DATE = re.compile(r"\b(\d{1,2})(?:er)?\s+([a-zéû\.]+)\s+(\d{2,4})\b", re.I)
+MONTH_ALIASES = {
+    "jan": 1,
+    "janv": 1,
+    "janvier": 1,
+    "fev": 2,
+    "fevr": 2,
+    "fevrier": 2,
+    "mar": 3,
+    "mars": 3,
+    "avr": 4,
+    "avril": 4,
+    "mai": 5,
+    "jun": 6,
+    "juin": 6,
+    "jul": 7,
+    "juil": 7,
+    "juillet": 7,
+    "aou": 8,
+    "aout": 8,
+    "sep": 9,
+    "sept": 9,
+    "septembre": 9,
+    "oct": 10,
+    "octobre": 10,
+    "nov": 11,
+    "novembre": 11,
+    "dec": 12,
+    "decembre": 12,
+}
 
 
 def _pause() -> None:
@@ -29,6 +64,58 @@ def _describe_locator(candidate) -> str:
     if callable(candidate):
         return getattr(candidate, "__name__", repr(candidate))
     return getattr(candidate, "_selector", repr(candidate))
+
+
+def _strip_accents(value: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFKD", value) if not unicodedata.combining(c))
+
+
+def _to_iso_date(year: int, month: int, day: int) -> str | None:
+    try:
+        return date(year, month, day).isoformat()
+    except ValueError:
+        return None
+
+
+def _parse_numeric_date(text: str) -> str | None:
+    match = RE_NUMERIC_DATE.search(text)
+    if not match:
+        return None
+    day, month, year = (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    if year < 100:
+        year += 2000
+    return _to_iso_date(year, month, day)
+
+
+def _parse_textual_date(text: str) -> str | None:
+    normalised = _strip_accents(text.lower())
+    match = RE_TEXTUAL_DATE.search(normalised)
+    if not match:
+        return None
+    day = int(match.group(1))
+    token = match.group(2).replace(".", "").strip()
+    month = MONTH_ALIASES.get(token)
+    if month is None and len(token) > 3:
+        month = MONTH_ALIASES.get(token[:3])
+    if month is None:
+        return None
+    year = int(match.group(3))
+    if year < 100:
+        year += 2000
+    return _to_iso_date(year, month, day)
+
+
+def _guess_start_date(*snippets: str) -> str | None:
+    for snippet in snippets:
+        if not snippet:
+            continue
+        iso = _parse_numeric_date(snippet)
+        if iso:
+            return iso
+        iso = _parse_textual_date(snippet)
+        if iso:
+            return iso
+    return None
 
 
 def _try_click(
@@ -285,13 +372,15 @@ def extract_current_page_items(page: Page):
                 if len(parts) >= 2:
                     club = parts[-1]
 
+            start_date = _guess_start_date(ctx, title)
+
             item = {
                 "name": title or "Tournoi",
                 "level": None,
                 "category": category,
                 "club_name": club,
                 "city": None,
-                "start_date": None,
+                "start_date": start_date,
                 "end_date": None,
                 "detail_url": href,
                 "registration_url": None,

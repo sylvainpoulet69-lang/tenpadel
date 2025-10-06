@@ -5,7 +5,7 @@ from typing import List, Sequence
 
 import pendulum
 from flask import Blueprint, current_app, jsonify, request
-from sqlalchemy import asc, desc
+from sqlalchemy import asc, desc, or_
 
 from services.tournament_store_models import TournamentRecord
 
@@ -39,29 +39,67 @@ def list_tournaments():
 
     city = request.args.get("city")
     if city:
-        query = query.filter(TournamentRecord.city.ilike(f"%{city}%"))
+        city = city.strip()
+        if city:
+            query = query.filter(
+                or_(
+                    TournamentRecord.city.ilike(f"%{city}%"),
+                    TournamentRecord.city.is_(None),
+                    TournamentRecord.city == "",
+                )
+            )
 
     region = request.args.get("region")
     if region:
-        query = query.filter(TournamentRecord.region == region)
+        region = region.strip()
+        if region:
+            query = query.filter(
+                or_(
+                    TournamentRecord.region == region,
+                    TournamentRecord.region.is_(None),
+                    TournamentRecord.region == "",
+                )
+            )
 
     date_from = request.args.get("from")
+    date_to = request.args.get("to")
+    start = None
+    end = None
     if date_from:
         try:
             start = pendulum.parse(date_from, strict=False).to_date_string()
         except Exception:  # pragma: no cover - invalid user input
             start = None
-        if start:
-            query = query.filter(TournamentRecord.start_date >= start)
-
-    date_to = request.args.get("to")
     if date_to:
         try:
             end = pendulum.parse(date_to, strict=False).to_date_string()
         except Exception:  # pragma: no cover - invalid user input
             end = None
-        if end:
-            query = query.filter(TournamentRecord.start_date <= end)
+
+    if start and end:
+        query = query.filter(
+            or_(
+                TournamentRecord.start_date.between(start, end),
+                TournamentRecord.start_date.is_(None),
+                TournamentRecord.start_date == "",
+            )
+        )
+    elif start:
+        query = query.filter(
+            or_(
+                TournamentRecord.start_date >= start,
+                TournamentRecord.start_date.is_(None),
+                TournamentRecord.start_date == "",
+            )
+        )
+    elif end:
+        query = query.filter(
+            or_(
+                TournamentRecord.start_date <= end,
+                TournamentRecord.start_date.is_(None),
+                TournamentRecord.start_date == "",
+            )
+        )
 
     sort = request.args.get("sort", "DATE_ASC").upper()
     order_clause = SORT_MAPPING.get(sort, SORT_MAPPING["DATE_ASC"])
